@@ -1,0 +1,6 @@
+{
+  "name": "Cyber Runner 3D",
+  "description": "A high-performance 3D infinite runner game and character viewer with custom glTF support, built with React, Babylon.js, and Tailwind CSS.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
