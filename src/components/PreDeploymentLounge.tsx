@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import AbyssumAudioController from './AbyssumAudioController';
 
-const modelGlbUrl = '/jump-sequence.glb';
+const modelGlbUrl = '/jog-fwd-variants.glb';
 
 export interface DailyMission {
   id: string;
@@ -410,7 +410,7 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
 
     return SceneLoader.ImportMeshAsync('', rootUrl, fileName, targetScene)
       .then((result) => {
-        console.log(`GLTF model (jump-sequence.glb) loaded successfully in Pre-deployment Viewer:`, result);
+        console.log(`GLTF model (jog-fwd-variants.glb) loaded successfully in Pre-deployment Viewer:`, result);
         const loadedRoot = result.meshes[0];
         loadedRoot.parent = targetRoot;
         loadedRoot.scaling = new Vector3(1, 1, 1);
@@ -493,7 +493,7 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
     const steps = [
       { text: 'Accessing tactical database...', duration: 400, prg: 20 },
       { text: 'Calibrating character telemetry...', duration: 500, prg: 45 },
-      { text: 'Scanning for local assets (jump-sequence.glb)...', duration: 600, prg: 70 },
+      { text: 'Scanning for local assets (jog-fwd-variants.glb)...', duration: 600, prg: 70 },
       { text: 'Mounting holograph visualizer...', duration: 400, prg: 100 }
     ];
 

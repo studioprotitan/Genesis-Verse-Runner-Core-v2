@@ -36,13 +36,14 @@ import {
   PlayerState,
   WeaponType,
   CollectibleData,
+  ProximityLog,
 } from '../types';
 import { SentinelRegistry } from '../utils/sentinel';
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 
-const PRIMARY_GLB  = '/jump-sequence.glb';
-const FALLBACK_GLB = '/jump-sequence.glb';
+const PRIMARY_GLB  = '/jog-fwd-variants.glb';
+const FALLBACK_GLB = '/jog-fwd-variants.glb';
 
 const LANE_WIDTH   = 2.0;
 const TRACK_LENGTH = 160.0;
@@ -92,12 +93,18 @@ interface GameCanvasProps {
 type AnimState = 'IDLE' | 'RUNNING' | 'JUMPING' | 'SLIDING' | 'STAGGER' | 'DEAD';
 
 interface LoadedAnims {
-  idle?:    any;
-  running?: any;
-  jumping?: any;
-  sliding?: any;
-  stagger?: any;
-  dead?:    any;
+  idle?:         any;
+  running?:      any;
+  jumping?:      any;
+  jumpStart?:    any;
+  jumpApex?:     any;
+  jumpPreland?:  any;
+  jumpRecovery?: any;
+  sliding?:      any;
+  stagger?:      any;
+  dead?:         any;
+  jogLeft?:      any;
+  jogRight?:     any;
 }
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -467,30 +474,70 @@ export default function GameCanvas({
     let staggered     = false;
     const anims: LoadedAnims = {};
     let animState: AnimState = 'RUNNING';
+    let currentActiveAnim: any = null;
 
     const findAnim = (groups: any[], keys: string[]) =>
       groups.find((g: any) => keys.some(k => g.name.toLowerCase().includes(k)));
 
-    const playAnim = (next: AnimState) => {
-      if (animState === next) return;
-      const prev   = anims[animState.toLowerCase() as keyof LoadedAnims];
-      let   target = anims[next.toLowerCase()   as keyof LoadedAnims];
-      if (!target) target = anims.running ?? anims.idle;
-      animState = next;
+    const playAnimGroup = (target: any, loop: boolean = true) => {
       if (!target) return;
-      const loop = !['JUMPING', 'STAGGER', 'DEAD'].includes(next);
+      if (currentActiveAnim === target) return;
+
+      const prev = currentActiveAnim;
+      currentActiveAnim = target;
+
       if (prev && prev !== target) {
         let t = 0;
-        target.play(loop); target.weight = 0.01;
+        target.play(loop);
+        target.weight = 0.01;
         const obs = scene.onBeforeRenderObservable.add(() => {
           t += engine.getDeltaTime() / 1000;
-          const r = Math.min(1, t / 0.12);
-          prev.weight   = 1 - r;
+          const r = Math.min(1.0, t / 0.12);
+          prev.weight = 1.0 - r;
           target.weight = r;
-          if (r >= 1) { prev.stop(); scene.onBeforeRenderObservable.remove(obs); }
+          if (r >= 1.0) {
+            prev.stop();
+            scene.onBeforeRenderObservable.remove(obs);
+          }
         });
       } else {
-        target.play(loop); target.weight = 1;
+        target.play(loop);
+        target.weight = 1.0;
+      }
+    };
+
+    const playAnim = (next: AnimState) => {
+      animState = next;
+      if (next === 'DEAD') {
+        playAnimGroup(anims.dead, false);
+      } else if (next === 'STAGGER') {
+        playAnimGroup(anims.stagger, false);
+      } else if (next === 'SLIDING') {
+        playAnimGroup(anims.sliding, true);
+      } else if (next === 'RUNNING') {
+        const diff = ps.targetLaneX - ps.xPosition;
+        if (diff < -0.15) {
+          playAnimGroup(anims.jogLeft || anims.running, true);
+        } else if (diff > 0.15) {
+          playAnimGroup(anims.jogRight || anims.running, true);
+        } else {
+          playAnimGroup(anims.running, true);
+        }
+      } else if (next === 'JUMPING') {
+        const progress = jumpTime / JUMP_DURATION;
+        let targetJump = anims.jumpStart;
+        if (progress < 0.25) {
+          targetJump = anims.jumpStart;
+        } else if (progress < 0.60) {
+          targetJump = anims.jumpApex;
+        } else if (progress < 0.85) {
+          targetJump = anims.jumpPreland;
+        } else {
+          targetJump = anims.jumpRecovery;
+        }
+        playAnimGroup(targetJump || anims.jumping, false);
+      } else {
+        playAnimGroup(anims.idle, true);
       }
     };
 
@@ -544,16 +591,24 @@ export default function GameCanvas({
         const groups = result.animationGroups as any[];
         groups.forEach((g: any) => { g.stop(); g.weight = 0; });
 
-        anims.idle    = findAnim(groups, ['cst-ert-idle-a', 'idle', 'hero']);
-        anims.running = findAnim(groups, ['cst-ert-jog-fwd-a', 'jog', 'walk', 'run']);
-        anims.jumping = findAnim(groups, ['cst-ert-jump-start-a', 'jump-start', 'jump-apex', 'jump', 'leap']);
-        anims.sliding = findAnim(groups, ['slide', 'crouch']);
-        anims.stagger = findAnim(groups, ['damage', 'stagger', 'hit', 'pain']);
-        anims.dead    = findAnim(groups, ['crash', 'dead', 'die', 'collapse']);
+        anims.idle         = findAnim(groups, ['cst-ert-idle-a']) || findAnim(groups, ['idle', 'hero']);
+        anims.running      = findAnim(groups, ['cst-ert-jog-fwd-a']) || findAnim(groups, ['jog', 'walk', 'run']);
+        anims.jumpStart    = findAnim(groups, ['cst-ert-jump-start-a']) || findAnim(groups, ['jump-start', 'jump']);
+        anims.jumpApex     = findAnim(groups, ['cst-ert-jump-apex-a']) || findAnim(groups, ['jump-apex', 'jump']);
+        anims.jumpPreland  = findAnim(groups, ['cst-ert-jump-preland-a']) || findAnim(groups, ['jump-preland', 'jump']);
+        anims.jumpRecovery = findAnim(groups, ['cst-ert-jump-recovery-a']) || findAnim(groups, ['jump-recovery', 'jump']);
+        anims.sliding      = findAnim(groups, ['cst-ert-jog-fwd-downhill-a']) || findAnim(groups, ['slide', 'crouch']);
+        anims.stagger      = findAnim(groups, ['cst-ert-jog-fwd-pivot-180-a']) || findAnim(groups, ['stagger', 'damage', 'hit']);
+        anims.dead         = findAnim(groups, ['cst-ert-jog-fwd-stop-a']) || findAnim(groups, ['dead', 'crash']);
+        anims.jogLeft      = findAnim(groups, ['cst-ert-jog-fwd-circle-left-a']);
+        anims.jogRight     = findAnim(groups, ['cst-ert-jog-fwd-circle-right-a']);
+        anims.jumping      = anims.jumpStart || findAnim(groups, ['jump']);
+
         if (!anims.running && groups.length > 0) anims.running = groups[0];
 
         const start = anims.running ?? anims.idle;
         if (start) { start.play(true); start.weight = 1; }
+        currentActiveAnim = start;
         animState = anims.running ? 'RUNNING' : 'IDLE';
       })
       .catch(() => { /* fallback to procedural */ });
@@ -998,8 +1053,10 @@ export default function GameCanvas({
             obs.data.hasBeenPassed = true; hit = true; proj.hitAny = true;
             obs.mesh.scaling.set(0.01, 0.01, 0.01);
             playSFX('slam', isMutedRef.current); triggerVibration(30);
-            ps.destroyCombo++; if (ps.destroyCombo > ps.maxDestroyCombo!) ps.maxDestroyCombo = ps.destroyCombo;
-            ps.bonusScore = (ps.bonusScore ?? 0) + 150 * Math.min(10, 1 + Math.floor(ps.destroyCombo / 3));
+            const newCombo = (ps.destroyCombo ?? 0) + 1;
+            ps.destroyCombo = newCombo;
+            if (newCombo > (ps.maxDestroyCombo ?? 0)) ps.maxDestroyCombo = newCombo;
+            ps.bonusScore = (ps.bonusScore ?? 0) + 150 * Math.min(10, 1 + Math.floor(newCombo / 3));
             spawnExplosion(obs.mesh.position, new Color3(0, 0.9, 1));
             spawnShards(obs.mesh.position, obs.mesh.material);
           }
@@ -1025,8 +1082,10 @@ export default function GameCanvas({
             w.hitAny = true; obs.data.hasBeenPassed = true;
             obs.mesh.scaling.set(0.01, 0.01, 0.01);
             playSFX('slam', isMutedRef.current); triggerVibration(40);
-            ps.destroyCombo++; if (ps.destroyCombo > ps.maxDestroyCombo!) ps.maxDestroyCombo = ps.destroyCombo;
-            ps.bonusScore = (ps.bonusScore ?? 0) + 150 * Math.min(10, 1 + Math.floor(ps.destroyCombo / 3));
+            const newCombo = (ps.destroyCombo ?? 0) + 1;
+            ps.destroyCombo = newCombo;
+            if (newCombo > (ps.maxDestroyCombo ?? 0)) ps.maxDestroyCombo = newCombo;
+            ps.bonusScore = (ps.bonusScore ?? 0) + 150 * Math.min(10, 1 + Math.floor(newCombo / 3));
             spawnShards(obs.mesh.position, obs.mesh.material);
           }
         });
@@ -1048,9 +1107,16 @@ export default function GameCanvas({
             const diff = Math.abs(obs.data.lane - ps.currentLane);
             if (diff <= 1) {
               const pts = diff === 0 ? 250 : 75;
+              const newLog: ProximityLog = {
+                id: Math.random().toString(36).slice(2),
+                type: diff === 0 ? 'PERFECT_DODGE' : 'GRAZE',
+                points: pts,
+                obstacleType: obs.data.type,
+                distance: diff === 0 ? 0.3 : 1.8,
+                timestamp: Date.now()
+              };
               ps.proximityLogs = [
-                { id: Math.random().toString(36).slice(2), type: diff === 0 ? 'PERFECT_DODGE' : 'GRAZE',
-                  points: pts, obstacleType: obs.data.type, distance: diff === 0 ? 0.3 : 1.8, timestamp: Date.now() },
+                newLog,
                 ...(ps.proximityLogs ?? []),
               ].slice(0, 5);
               ps.bonusScore = (ps.bonusScore ?? 0) + pts;
@@ -1091,8 +1157,10 @@ export default function GameCanvas({
 
         if (burstActiveLocal) {
           playSFX('slam', isMutedRef.current); triggerVibration(60);
-          ps.destroyCombo++; if (ps.destroyCombo > ps.maxDestroyCombo!) ps.maxDestroyCombo = ps.destroyCombo;
-          ps.bonusScore = (ps.bonusScore ?? 0) + 250 * Math.min(10, 1 + Math.floor(ps.destroyCombo / 3));
+          const newCombo = (ps.destroyCombo ?? 0) + 1;
+          ps.destroyCombo = newCombo;
+          if (newCombo > (ps.maxDestroyCombo ?? 0)) ps.maxDestroyCombo = newCombo;
+          ps.bonusScore = (ps.bonusScore ?? 0) + 250 * Math.min(10, 1 + Math.floor(newCombo / 3));
           obs.mesh.scaling.set(0.01, 0.01, 0.01);
           spawnShards(obs.mesh.position, obs.mesh.material);
         } else {
