@@ -53,6 +53,15 @@ export interface CollectibleData {
   hasBeenCollected: boolean;
 }
 
+export interface DiscrepancyLog {
+  id: string;
+  timestamp: number;
+  anomaly: string;
+  category: 'VELOCITY' | 'POSITION' | 'RESOURCE' | 'STATE';
+  currentVal: any;
+  expectedMax: any;
+}
+
 export interface PlayerState {
   distance: number;
   speed: number;
@@ -82,4 +91,14 @@ export interface PlayerState {
   enemyScanDurationRemaining?: number;
   enemyScanCooldownRemaining?: number;
   proximityLogs?: ProximityLog[];
+  sentinelStatus?: 'SECURE' | 'ANOMALY_DETECTED' | 'STANDBY';
+  sentinelAnomalies?: string[];
+  sentinelWarnings?: string[];
+  sentinelChecksPassedCount?: number;
+  sentinelConstitutionVersion?: string;
+  sentinelLogs?: DiscrepancyLog[];
+  currentSectorName?: string;
+  currentSectorLabel?: string;
+  currentSectorColor?: string;
+  nextSectorDistance?: number;
 }

@@ -1,4 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';import {
+/**
+ * GENESIS VERSE — GAME CANVAS
+ * Babylon.js Endless Runner · CST-ERT Character Controller
+ * Commander Antonio Scott · Simpro Titans Studio LLC
+ * MOAI Bridge · Claude SSOT Authority
+ *
+ * Clean production copy — Phase 15 Integration
+ */
+
+import React, { useEffect, useRef, useState } from 'react';
+import {
   Engine,
   Scene,
   ArcRotateCamera,
@@ -12,30 +22,58 @@ import React, { useEffect, useRef, useState } from 'react';import {
   CreateBox,
   TransformNode,
   DynamicTexture,
-  Mesh
+  Mesh,
 } from '@babylonjs/core';
-
-import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
-import "@babylonjs/loaders/glTF";
-
-
+import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader';
+import '@babylonjs/loaders/glTF';
 import '@babylonjs/inspector';
-import { GameState, Lane, ObstacleType, ObstacleData, PlayerState, WeaponType, CollectibleData } from '../types';
 
-// Helper to safely trigger device haptic/vibration feedback
-const triggerVibration = (pattern: number | number[]) => {
-  if (typeof navigator !== 'undefined' && navigator.vibrate) {
-    try {
-      navigator.vibrate(pattern);
-    } catch (e) {
-      // Ignore errors on devices/browsers that don't support or block vibration
-    }
-  }
-};
+import {
+  GameState,
+  Lane,
+  ObstacleType,
+  ObstacleData,
+  PlayerState,
+  WeaponType,
+  CollectibleData,
+} from '../types';
+import { SentinelRegistry } from '../utils/sentinel';
 
-const primaryGlbUrl = '/jump-sequence.glb';
-const fallbackGlbUrl = '/jump-sequence.glb';
-const jumpGlbUrl = '/jump-sequence.glb';
+// ── CONSTANTS ────────────────────────────────────────────────────────────────
+
+const PRIMARY_GLB  = '/jump-sequence.glb';
+const FALLBACK_GLB = '/jump-sequence.glb';
+
+const LANE_WIDTH   = 2.0;
+const TRACK_LENGTH = 160.0;
+const JUMP_DURATION  = 0.8;
+const SLIDE_DURATION = 0.7;
+const BURST_DURATION = 3.5;
+const ATTACK_COOLDOWN = 0.35;
+const SCAN_DURATION_MAX  = 5.0;
+const SCAN_COOLDOWN_MAX  = 18.0;
+
+// ── DEPTH PALETTES ────────────────────────────────────────────────────────────
+
+const PALETTES = [
+  { threshold:    0, top: '#050a1e', bottom: '#1f0426' },
+  { threshold:  400, top: '#0a0518', bottom: '#ff007f' },
+  { threshold: 1000, top: '#020d1a', bottom: '#00ffff' },
+  { threshold: 1800, top: '#051405', bottom: '#39ff14' },
+  { threshold: 3000, top: '#1a0000', bottom: '#ff2a00' },
+  { threshold: 5000, top: '#080808', bottom: '#ffd700' },
+];
+
+const SECTORS = [
+  { name: 'NEON_DOCK',         label: 'SECTOR I: NEON DOCK',         threshold:    0, color: '#00ffff', accent: '#ff00ff', desc: 'Sub-surface harbor.',          rainColor: '#00ffff' },
+  { name: 'SYNTHWAVE_RIDGE',   label: 'SECTOR II: SYNTHWAVE RIDGE',  threshold:  400, color: '#ff007f', accent: '#ffae00', desc: 'Retro-future pink canyons.',    rainColor: '#ff007f' },
+  { name: 'AQUAMARINE_TRENCH', label: 'SECTOR III: AQUA TRENCH',     threshold: 1000, color: '#00ffe7', accent: '#0022ff', desc: 'Sub-oceanic trench.',           rainColor: '#00ffcc' },
+  { name: 'MATRIX_GRID',       label: 'SECTOR IV: MATRIX GRID',      threshold: 1800, color: '#39ff14', accent: '#005500', desc: 'Toxic-green code walls.',       rainColor: '#39ff14' },
+  { name: 'VOLCANIC_CORE',     label: 'SECTOR V: VOLCANIC CORE',     threshold: 3000, color: '#ff2a00', accent: '#ff7f00', desc: 'Molten magma core.',            rainColor: '#ff5500' },
+  { name: 'COSMIC_SINGULARITY',label: 'SECTOR VI: SINGULARITY',      threshold: 5000, color: '#ffd700', accent: '#4b0082', desc: 'Golden cyber void rift.',       rainColor: '#ffd700' },
+];
+
+// ── TYPES ─────────────────────────────────────────────────────────────────────
 
 interface GameCanvasProps {
   gameState: GameState;
@@ -51,1796 +89,1148 @@ interface GameCanvasProps {
   onGameOver: () => void;
 }
 
-export default function GameCanvas({
-  gameState,
-  selectedGear,
-  onStatsUpdate,
-  onGameOver
-}: GameCanvasProps) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const sceneRef = useRef<Scene | null>(null);
-  const [inspectorVisible, setInspectorVisible] = useState<boolean>(false);
-  const [isBurstActive, setIsBurstActive] = useState<boolean>(false);
-  const isMutedRef = useRef<boolean>(false);
+type AnimState = 'IDLE' | 'RUNNING' | 'JUMPING' | 'SLIDING' | 'STAGGER' | 'DEAD';
 
-  const toggleInspector = () => {
-    if (!sceneRef.current) return;
-    const isVisible = !inspectorVisible;
-    setInspectorVisible(isVisible);
-    if (isVisible) {
-      sceneRef.current.debugLayer.show({ overlay: true });
-    } else {
-      sceneRef.current.debugLayer.hide();
+interface LoadedAnims {
+  idle?:    any;
+  running?: any;
+  jumping?: any;
+  sliding?: any;
+  stagger?: any;
+  dead?:    any;
+}
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+
+const triggerVibration = (pattern: number | number[]) => {
+  if (typeof navigator !== 'undefined' && navigator.vibrate) {
+    try { navigator.vibrate(pattern); } catch (_) {}
+  }
+};
+
+const hexToRgb = (hex: string) => {
+  const r = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return r
+    ? { r: parseInt(r[1], 16), g: parseInt(r[2], 16), b: parseInt(r[3], 16) }
+    : { r: 0, g: 0, b: 0 };
+};
+
+const rgbToHex = (r: number, g: number, b: number) =>
+  '#' + ((1 << 24) + (Math.round(r) << 16) + (Math.round(g) << 8) + Math.round(b))
+    .toString(16).slice(1);
+
+const interpolatePalette = (dist: number) => {
+  let lo = PALETTES[0];
+  let hi = PALETTES[PALETTES.length - 1];
+  for (let i = 0; i < PALETTES.length - 1; i++) {
+    if (dist >= PALETTES[i].threshold && dist < PALETTES[i + 1].threshold) {
+      lo = PALETTES[i]; hi = PALETTES[i + 1]; break;
     }
+  }
+  const range = hi.threshold - lo.threshold;
+  const t = range === 0 ? 0 : Math.min(1, Math.max(0, (dist - lo.threshold) / range));
+  const lerp = (a: number, b: number) => a + (b - a) * t;
+  const lt = hexToRgb(lo.top),  ht = hexToRgb(hi.top);
+  const lb = hexToRgb(lo.bottom), hb = hexToRgb(hi.bottom);
+  return {
+    top:    rgbToHex(lerp(lt.r, ht.r), lerp(lt.g, ht.g), lerp(lt.b, ht.b)),
+    bottom: rgbToHex(lerp(lb.r, hb.r), lerp(lb.g, hb.g), lerp(lb.b, hb.b)),
   };
+};
 
-  // Sound effects generator
-  const playSynthSFX = (type: 'jump' | 'slide' | 'collect' | 'damage' | 'speed_boost' | 'slam' | 'plasma_slash' | 'ion_shoot' | 'no_ammo' | 'scan_sweep') => {
-    if (isMutedRef.current) return;
-    try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
+const getCurrentSector = (dist: number) => {
+  let current = SECTORS[0];
+  let next    = SECTORS[SECTORS.length - 1];
+  for (let i = 0; i < SECTORS.length; i++) {
+    if (dist >= SECTORS[i].threshold) {
+      current = SECTORS[i];
+      next    = SECTORS[i + 1] ?? SECTORS[i];
+    }
+  }
+  return { current, next };
+};
 
-      if (type === 'jump') {
+// ── AUDIO ─────────────────────────────────────────────────────────────────────
+
+type SFXType =
+  | 'jump' | 'slide' | 'collect' | 'damage' | 'speed_boost'
+  | 'slam'  | 'plasma_slash' | 'ion_shoot' | 'no_ammo' | 'scan_sweep';
+
+const playSFX = (type: SFXType, muted: boolean) => {
+  if (muted) return;
+  try {
+    const Ctx = window.AudioContext ?? (window as any).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx  = new Ctx();
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    const configs: Record<SFXType, () => void> = {
+      jump: () => {
         osc.type = 'triangle';
         osc.frequency.setValueAtTime(200, ctx.currentTime);
         osc.frequency.exponentialRampToValueAtTime(800, ctx.currentTime + 0.15);
         gain.gain.setValueAtTime(0.1, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.15);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.15);
-      } else if (type === 'slide') {
+        osc.start(); osc.stop(ctx.currentTime + 0.15);
+      },
+      slide: () => {
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(400, ctx.currentTime);
         osc.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 0.2);
         gain.gain.setValueAtTime(0.08, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.2);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.2);
-      } else if (type === 'collect') {
+        osc.start(); osc.stop(ctx.currentTime + 0.2);
+      },
+      collect: () => {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(800, ctx.currentTime);
         osc.frequency.setValueAtTime(1200, ctx.currentTime + 0.08);
         gain.gain.setValueAtTime(0.1, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.18);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.18);
-      } else if (type === 'damage') {
+        osc.start(); osc.stop(ctx.currentTime + 0.18);
+      },
+      damage: () => {
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(120, ctx.currentTime);
         osc.frequency.linearRampToValueAtTime(50, ctx.currentTime + 0.35);
         gain.gain.setValueAtTime(0.15, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.35);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.35);
-      } else if (type === 'speed_boost') {
+        osc.start(); osc.stop(ctx.currentTime + 0.35);
+      },
+      speed_boost: () => {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(300, ctx.currentTime);
         osc.frequency.exponentialRampToValueAtTime(1500, ctx.currentTime + 0.5);
         gain.gain.setValueAtTime(0.12, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.5);
-      } else if (type === 'plasma_slash') {
+        osc.start(); osc.stop(ctx.currentTime + 0.5);
+      },
+      plasma_slash: () => {
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(450, ctx.currentTime);
         osc.frequency.exponentialRampToValueAtTime(80, ctx.currentTime + 0.3);
         gain.gain.setValueAtTime(0.14, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.3);
-      } else if (type === 'ion_shoot') {
+        osc.start(); osc.stop(ctx.currentTime + 0.3);
+      },
+      ion_shoot: () => {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(950, ctx.currentTime);
         osc.frequency.exponentialRampToValueAtTime(220, ctx.currentTime + 0.18);
         gain.gain.setValueAtTime(0.1, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.18);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.18);
-      } else if (type === 'no_ammo') {
+        osc.start(); osc.stop(ctx.currentTime + 0.18);
+      },
+      no_ammo: () => {
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(110, ctx.currentTime);
         gain.gain.setValueAtTime(0.08, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.12);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.12);
-      } else if (type === 'scan_sweep') {
+        osc.start(); osc.stop(ctx.currentTime + 0.12);
+      },
+      slam: () => {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(150, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.3);
+        gain.gain.setValueAtTime(0.18, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+        osc.start(); osc.stop(ctx.currentTime + 0.3);
+      },
+      scan_sweep: () => {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(180, ctx.currentTime);
         osc.frequency.linearRampToValueAtTime(1200, ctx.currentTime + 0.45);
         osc.frequency.exponentialRampToValueAtTime(320, ctx.currentTime + 0.9);
-        
-        const osc2 = ctx.createOscillator();
-        const gain2 = ctx.createGain();
-        osc2.type = 'triangle';
-        osc2.frequency.setValueAtTime(320, ctx.currentTime);
-        osc2.frequency.linearRampToValueAtTime(800, ctx.currentTime + 0.5);
-        
-        osc2.connect(gain2);
-        gain2.connect(ctx.destination);
-        gain2.gain.setValueAtTime(0.06, ctx.currentTime);
-        gain2.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.9);
-        
         gain.gain.setValueAtTime(0.12, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.9);
-        
-        osc.start();
-        osc.stop(ctx.currentTime + 0.9);
-        osc2.start();
-        osc2.stop(ctx.currentTime + 0.9);
-      } else if (type === 'slam') {
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(150, ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.3);
-        
-        const osc2 = ctx.createOscillator();
-        const gain2 = ctx.createGain();
-        osc2.type = 'triangle';
-        osc2.frequency.setValueAtTime(300, ctx.currentTime);
-        osc2.frequency.exponentialRampToValueAtTime(10, ctx.currentTime + 0.25);
-        
-        osc2.connect(gain2);
-        gain2.connect(ctx.destination);
-        gain2.gain.setValueAtTime(0.12, ctx.currentTime);
-        gain2.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.25);
-        
-        gain.gain.setValueAtTime(0.18, ctx.currentTime);
-        gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-        
-        osc.start();
-        osc.stop(ctx.currentTime + 0.3);
-        osc2.start();
-        osc2.stop(ctx.currentTime + 0.25);
-      }
-    } catch (e) {
-      // Audio block safety
-    }
+        osc.start(); osc.stop(ctx.currentTime + 0.9);
+      },
+    };
+
+    configs[type]?.();
+  } catch (_) {}
+};
+
+// ── COMPONENT ─────────────────────────────────────────────────────────────────
+
+export default function GameCanvas({
+  gameState,
+  selectedGear,
+  onStatsUpdate,
+  onGameOver,
+}: GameCanvasProps) {
+  const canvasRef       = useRef<HTMLCanvasElement | null>(null);
+  const sceneRef        = useRef<Scene | null>(null);
+  const characterRef    = useRef<any>(null);
+  const isMutedRef      = useRef(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [isBurstActive, setIsBurstActive] = useState(false);
+
+  // ── INSPECTOR TOGGLE ────────────────────────────────────────────────────────
+  const toggleInspector = () => {
+    if (!sceneRef.current) return;
+    const next = !inspectorOpen;
+    setInspectorOpen(next);
+    next
+      ? sceneRef.current.debugLayer.show({ overlay: true })
+      : sceneRef.current.debugLayer.hide();
   };
 
+  // ── MAIN EFFECT ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!canvasRef.current || gameState !== GameState.PLAYING) return;
 
-    // 1. Engine & Scene Setup with dynamic Graphics Calibration
-    const savedQuality = localStorage.getItem('cyber_runner_graphics_quality') || 'balanced';
-    const antialias = savedQuality !== 'low';
-    const engine = new Engine(canvasRef.current, antialias);
-    
-    if (savedQuality === 'low') {
-      engine.setHardwareScalingLevel(1.5); // renders at 0.66x resolution for super smooth performance
-    } else if (savedQuality === 'high') {
-      engine.setHardwareScalingLevel(0.8); // 1.25x super-sampling for premium sharpness
-    } else {
-      engine.setHardwareScalingLevel(1.0); // crisp native resolution
-    }
+    // ── ENGINE SETUP ──────────────────────────────────────────────────────────
+    const quality   = localStorage.getItem('cyber_runner_graphics_quality') ?? 'balanced';
+    const antialias = quality !== 'low';
+    const engine    = new Engine(canvasRef.current, antialias);
+    engine.setHardwareScalingLevel(
+      quality === 'low' ? 1.5 : quality === 'high' ? 0.8 : 1.0
+    );
 
     const scene = new Scene(engine);
     sceneRef.current = scene;
-
     scene.clearColor = new Color3(0.015, 0.02, 0.035).toColor4(1);
 
-    // 2. Camera tracking
-    const camera = new ArcRotateCamera('gameCamera', -Math.PI / 2, Math.PI / 2.3, 5.5, new Vector3(0, 1.2, 0), scene);
-    camera.lowerRadiusLimit = 4.5;
-    camera.upperRadiusLimit = 8.5;
-    camera.lowerBetaLimit = 1.0;
-    camera.upperBetaLimit = 1.5;
+    // ── CAMERA ────────────────────────────────────────────────────────────────
+    const camera = new ArcRotateCamera(
+      'cam', -Math.PI / 2, Math.PI / 2.3, 5.5,
+      new Vector3(0, 1.2, 0), scene
+    );
+    camera.lowerRadiusLimit  = 4.5;
+    camera.upperRadiusLimit  = 8.5;
+    camera.lowerBetaLimit    = 1.0;
+    camera.upperBetaLimit    = 1.5;
     const baseFov = camera.fov;
 
-    // 3. Cyber Lights
-    const hemiLight = new HemisphericLight('hemiLight', new Vector3(0, 1, 0), scene);
-    hemiLight.intensity = 0.55;
-    hemiLight.groundColor = new Color3(0.05, 0.08, 0.15);
+    // ── LIGHTS ────────────────────────────────────────────────────────────────
+    const hemi = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
+    hemi.intensity    = 0.55;
+    hemi.groundColor  = new Color3(0.05, 0.08, 0.15);
 
-    const fillLight = new PointLight('fillLight', new Vector3(-2.5, 1.5, -2.0), scene);
+    const fillLight = new PointLight('fill', new Vector3(-2.5, 1.5, -2), scene);
     fillLight.intensity = 0.65;
-    fillLight.diffuse = Color3.FromHexString(selectedGear.chestColor);
+    fillLight.diffuse   = Color3.FromHexString(selectedGear.chestColor);
 
-    const keyLight = new PointLight('keyLight', new Vector3(2.5, 3.0, 2.0), scene);
+    const keyLight = new PointLight('key', new Vector3(2.5, 3.0, 2.0), scene);
     keyLight.intensity = 0.7;
-    keyLight.diffuse = Color3.FromHexString(selectedGear.visorColor);
+    keyLight.diffuse   = Color3.FromHexString(selectedGear.visorColor);
 
-    // --- 3.5. PROCEDURAL DYNAMIC SKYBOX SETUP ---
+    // ── SKYBOX ────────────────────────────────────────────────────────────────
     const skybox = CreateSphere('skybox', { diameter: 350, segments: 24 }, scene);
     skybox.infiniteDistance = true;
-    skybox.isPickable = false;
-    
+    skybox.isPickable       = false;
     const skyboxMat = new StandardMaterial('skyboxMat', scene);
-    skyboxMat.disableLighting = true;
-    skyboxMat.backFaceCulling = false; // View from the inside
+    skyboxMat.disableLighting   = true;
+    skyboxMat.backFaceCulling   = false;
     skyboxMat.disableDepthWrite = true;
-    
-    const skyboxTexture = new DynamicTexture('skyboxTex', { width: 512, height: 256 }, scene, false);
-    skyboxMat.emissiveTexture = skyboxTexture;
+    const skyTex = new DynamicTexture('skyTex', { width: 512, height: 256 }, scene, false);
+    skyboxMat.emissiveTexture = skyTex;
     skybox.material = skyboxMat;
 
-    // Depth-based color palettes representing Abyssum depths
-    const PALETTES = [
-      { threshold: 0, top: '#050a1e', bottom: '#1f0426' },       // 0m: Neon Violet Deep Blue
-      { threshold: 400, top: '#0a0518', bottom: '#ff007f' },     // 400m: Hot Pink Synthwave
-      { threshold: 1000, top: '#020d1a', bottom: '#00ffff' },    // 1000m: Electric Aqua / Deep Oceanic Depth
-      { threshold: 1800, top: '#051405', bottom: '#39ff14' },    // 1800m: Tox-Green Cyber Matrix
-      { threshold: 3000, top: '#1a0000', bottom: '#ff2a00' },    // 3000m: Volcanic Core / Inferno Orange-Red
-      { threshold: 5000, top: '#080808', bottom: '#ffd700' },    // 5000m: Golden Cybernetic Singularity
-    ];
-
-    const hexToRgb = (hex: string) => {
-      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-      return result ? {
-        r: parseInt(result[1], 16),
-        g: parseInt(result[2], 16),
-        b: parseInt(result[3], 16)
-      } : { r: 0, g: 0, b: 0 };
-    };
-
-    const rgbToHex = (r: number, g: number, b: number) => {
-      return "#" + ((1 << 24) + (Math.round(r) << 16) + (Math.round(g) << 8) + Math.round(b)).toString(16).slice(1);
-    };
-
-    const getInterpolatedColor = (dist: number) => {
-      let lower = PALETTES[0];
-      let upper = PALETTES[PALETTES.length - 1];
-      
-      for (let i = 0; i < PALETTES.length - 1; i++) {
-        if (dist >= PALETTES[i].threshold && dist < PALETTES[i+1].threshold) {
-          lower = PALETTES[i];
-          upper = PALETTES[i+1];
-          break;
-        }
-      }
-      
-      const range = upper.threshold - lower.threshold;
-      const factor = range === 0 ? 0 : Math.min(1, Math.max(0, (dist - lower.threshold) / range));
-      
-      const c1Top = hexToRgb(lower.top);
-      const c2Top = hexToRgb(upper.top);
-      const c1Bottom = hexToRgb(lower.bottom);
-      const c2Bottom = hexToRgb(upper.bottom);
-      
-      const topColor = rgbToHex(
-        c1Top.r + (c2Top.r - c1Top.r) * factor,
-        c1Top.g + (c2Top.g - c1Top.g) * factor,
-        c1Top.b + (c2Top.b - c1Top.b) * factor
-      );
-      
-      const bottomColor = rgbToHex(
-        c1Bottom.r + (c2Bottom.r - c1Bottom.r) * factor,
-        c1Bottom.g + (c2Bottom.g - c1Bottom.g) * factor,
-        c1Bottom.b + (c2Bottom.b - c1Bottom.b) * factor
-      );
-      
-      return { top: topColor, bottom: bottomColor };
-    };
+    let sectorFlash     = 0;
+    let lastSectorName  = 'NEON_DOCK';
+    let lastSkyDist     = 0;
 
     const updateSkybox = (dist: number) => {
-      const { top, bottom } = getInterpolatedColor(dist);
-      const ctx = skyboxTexture.getContext();
+      const { top, bottom } = interpolatePalette(dist);
+      const ctx = skyTex.getContext();
       if (!ctx) return;
-      
-      // Draw background gradient
+
       const grad = ctx.createLinearGradient(0, 0, 0, 256);
-      grad.addColorStop(0, top);
+      grad.addColorStop(0,   top);
       grad.addColorStop(0.5, bottom);
-      grad.addColorStop(1.0, top); // wrap-around gradient for smooth sphere poles mapping
-      
+      grad.addColorStop(1,   top);
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, 512, 256);
-      
-      // Draw subtle holographic depth metrics / grid
-      ctx.strokeStyle = bottom + "15"; // very faint
-      ctx.lineWidth = 1;
-      
-      // Draw horizontal grid lines (depth bars)
-      for (let y = 16; y < 256; y += 32) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(512, y);
-        ctx.stroke();
-      }
-      
-      // Draw vertical grid lines
-      for (let x = 0; x < 512; x += 64) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, 256);
-        ctx.stroke();
-      }
 
-      // Dynamic distance label indicator printed directly on skybox texture for visual HUD feedback!
-      ctx.fillStyle = bottom + "65";
-      ctx.font = "bold 9px monospace";
-      ctx.fillText(`DEPTH: ${Math.floor(dist)}M / MAX_ABYSS_SYS`, 15, 30);
-      ctx.fillText(`ATMOSPHERE_LEVEL: ${Math.floor(dist / 1000) + 1}`, 15, 45);
+      ctx.strokeStyle = bottom + '15';
+      ctx.lineWidth   = 1;
+      for (let y = 16; y < 256; y += 32) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(512, y); ctx.stroke(); }
+      for (let x = 0;  x < 512; x += 64) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 256); ctx.stroke(); }
 
-      // Faint cyber grid details
-      ctx.fillStyle = bottom + "35";
-      ctx.fillRect(15, 55, 120, 2);
+      ctx.fillStyle = bottom + '65';
+      ctx.font = 'bold 9px monospace';
+      ctx.fillText(`DEPTH: ${Math.floor(dist)}M`, 15, 30);
 
-      skyboxTexture.update();
-
-      // Dynamically adapt clearColor and ambient ground colors for atmospheric consistency!
-      const topColor3 = Color3.FromHexString(top);
-      const bottomColor3 = Color3.FromHexString(bottom);
-      
-      scene.clearColor = topColor3.toColor4(1);
-      if (hemiLight) {
-        hemiLight.groundColor = bottomColor3.scale(0.35); // dynamic ground glow ambience
-        hemiLight.diffuse = topColor3.scale(0.8); // dynamic ambient glow
-      }
+      skyTex.update();
+      scene.clearColor = Color3.FromHexString(top).toColor4(1);
+      hemi.groundColor = Color3.FromHexString(bottom).scale(0.35);
+      hemi.diffuse     = Color3.FromHexString(top).scale(0.8);
+      skyboxMat.emissiveColor = sectorFlash > 0.01
+        ? new Color3(1 + sectorFlash * 1.5, 1 + sectorFlash * 1.5, 1 + sectorFlash * 1.5)
+        : new Color3(1, 1, 1);
     };
-
-    // Initialize skybox
     updateSkybox(0);
-    let lastSkyboxUpdateDist = 0;
 
-    // 4. Custom Materials Setup
-    const metalBodyMat = new StandardMaterial('metalBodyMat', scene);
-    metalBodyMat.diffuseColor = Color3.FromHexString(selectedGear.armorColor);
+    // ── MATERIALS (shared) ────────────────────────────────────────────────────
+    const metalBodyMat  = new StandardMaterial('metalBody', scene);
+    metalBodyMat.diffuseColor  = Color3.FromHexString(selectedGear.armorColor);
     metalBodyMat.specularColor = new Color3(0.6, 0.6, 0.8);
 
-    const neonVisorMat = new StandardMaterial('neonVisorMat', scene);
+    const neonVisorMat = new StandardMaterial('neonVisor', scene);
     neonVisorMat.emissiveColor = Color3.FromHexString(selectedGear.visorColor);
 
-    const chestEmissiveMat = new StandardMaterial('chestEmissiveMat', scene);
-    chestEmissiveMat.emissiveColor = Color3.FromHexString(selectedGear.chestColor);
+    const chestMat = new StandardMaterial('chest', scene);
+    chestMat.emissiveColor = Color3.FromHexString(selectedGear.chestColor);
 
-    const metalDullMat = new StandardMaterial('metalDullMat', scene);
+    const metalDullMat = new StandardMaterial('metalDull', scene);
     metalDullMat.diffuseColor = new Color3(0.2, 0.2, 0.22);
 
-    // 5. Build Runner Highway Planes (The Track)
-    const laneWidth = 2.0;
-    const trackLength = 160.0;
+    const borderMat = new StandardMaterial('border', scene);
+    borderMat.emissiveColor = new Color3(0.95, 0.49, 0.15);
 
-    const trackMat = new StandardMaterial('trackMat', scene);
-    trackMat.diffuseColor = new Color3(0.03, 0.04, 0.07);
+    const scanMat = new StandardMaterial('scan', scene);
+    scanMat.diffuseColor     = new Color3(1, 0.15, 0.15);
+    scanMat.emissiveColor    = new Color3(1, 0.15, 0.15);
+    scanMat.wireframe        = true;
+    scanMat.disableDepthWrite = true;
+    scanMat.depthFunction    = Engine.ALWAYS;
+    scanMat.backFaceCulling  = false;
+
+    // ── TRACK ─────────────────────────────────────────────────────────────────
+    const trackMat = new StandardMaterial('track', scene);
+    trackMat.diffuseColor  = new Color3(0.03, 0.04, 0.07);
     trackMat.emissiveColor = new Color3(0.01, 0.015, 0.025);
 
-    const trackLeft = CreateBox('trackLeft', { width: laneWidth, height: 0.1, depth: trackLength }, scene);
-    trackLeft.position.set(-laneWidth, -0.05, trackLength / 2 - 10);
-    trackLeft.material = trackMat;
+    const mkTrack = (x: number) => {
+      const t = CreateBox('track', { width: LANE_WIDTH, height: 0.1, depth: TRACK_LENGTH }, scene);
+      t.position.set(x, -0.05, TRACK_LENGTH / 2 - 10);
+      t.material = trackMat;
+      return t;
+    };
+    mkTrack(-LANE_WIDTH); mkTrack(0); mkTrack(LANE_WIDTH);
 
-    const trackCenter = CreateBox('trackCenter', { width: laneWidth, height: 0.1, depth: trackLength }, scene);
-    trackCenter.position.set(0, -0.05, trackLength / 2 - 10);
-    trackCenter.material = trackMat;
+    const mkBorder = (x: number) => {
+      const b = CreateBox('border', { width: 0.08, height: 0.15, depth: TRACK_LENGTH }, scene);
+      b.position.set(x, 0.02, TRACK_LENGTH / 2 - 10);
+      b.material = borderMat;
+    };
+    mkBorder(-LANE_WIDTH * 1.5); mkBorder(LANE_WIDTH * 1.5);
 
-    const trackRight = CreateBox('trackRight', { width: laneWidth, height: 0.1, depth: trackLength }, scene);
-    trackRight.position.set(laneWidth, -0.05, trackLength / 2 - 10);
-    trackRight.material = trackMat;
-
-    // High contrast neon borders
-    const borderL = CreateBox('borderL', { width: 0.08, height: 0.15, depth: trackLength }, scene);
-    borderL.position.set(-laneWidth * 1.5, 0.02, trackLength / 2 - 10);
-    const borderMat = new StandardMaterial('borderMat', scene);
-    borderMat.emissiveColor = new Color3(0.95, 0.49, 0.15); // Neon tactical orange
-    borderL.material = borderMat;
-
-    const borderR = borderL.clone('borderR');
-    borderR.position.x = laneWidth * 1.5;
-
-    // --- 5.5. PARTICLE-BASED SPEED-SCALING CYBER ACID RAIN WEATHER SYSTEM ---
-    const savedQualityForRain = localStorage.getItem('cyber_runner_graphics_quality') || 'balanced';
-    const rainCount = savedQualityForRain === 'low' ? 45 : savedQualityForRain === 'high' ? 260 : 140;
-    const rainParticles: {
-      mesh: Mesh;
-      speedY: number;
-    }[] = [];
-
-    const rainMat = new StandardMaterial('rainMat', scene);
-    // Vibrant glowing acid green color matching high contrast cyberpunk theme
-    rainMat.diffuseColor = new Color3(0.0, 1.0, 0.4);
+    // ── RAIN ──────────────────────────────────────────────────────────────────
+    const rainCount = quality === 'low' ? 45 : quality === 'high' ? 260 : 140;
+    const rainMat   = new StandardMaterial('rain', scene);
+    rainMat.diffuseColor  = new Color3(0, 1, 0.4);
     rainMat.emissiveColor = new Color3(0.1, 0.9, 0.35);
-    rainMat.disableLighting = true; // Emits its own neon light, looks ultra modern
+    rainMat.disableLighting = true;
     rainMat.alpha = 0.5;
 
+    const rainDrops: { mesh: Mesh; speedY: number }[] = [];
     for (let i = 0; i < rainCount; i++) {
-      // Cylinder representing streaking rain lines
-      const rainDrop = CreateCylinder('rainDrop', { height: 0.7, diameter: 0.02, tessellation: 4 }, scene);
-      rainDrop.material = rainMat;
-
-      // Spread drops across lanes and forward down track
-      const rx = (Math.random() - 0.5) * 14;  // covering track plus surrounding areas
-      const ry = Math.random() * 8 + 0.2;     // fall range up to 8 units high
-      const rz = Math.random() * 80 - 15;     // Z range covering around runner and far ahead
-
-      rainDrop.position.set(rx, ry, rz);
-
-      rainParticles.push({
-        mesh: rainDrop,
-        speedY: 11 + Math.random() * 5, // fall speed 11-16 m/s
-      });
+      const drop = CreateCylinder('rain', { height: 0.7, diameter: 0.02, tessellation: 4 }, scene);
+      drop.material = rainMat;
+      drop.position.set((Math.random() - 0.5) * 14, Math.random() * 8, Math.random() * 80 - 15);
+      rainDrops.push({ mesh: drop, speedY: 11 + Math.random() * 5 });
     }
 
-    // 6. Character Base Skeleton & Setup
-    let characterRoot = new TransformNode('charRoot', scene);
-    characterRoot.position.set(0, 0.08, 0);
+    // ── PROCEDURAL CHARACTER ──────────────────────────────────────────────────
+    const charRoot = new TransformNode('charRoot', scene);
+    charRoot.position.set(0, 0.08, 0);
 
-    // High-poly procedural torso components
-    const coreBody = CreateCylinder('coreBody', { height: 1.4, diameterTop: 0.48, diameterBottom: 0.35, tessellation: 48 }, scene);
-    coreBody.position.y = 0.75;
-    coreBody.material = metalBodyMat;
-    coreBody.parent = characterRoot;
+    const coreBody   = CreateCylinder('body',   { height: 1.4, diameterTop: 0.48, diameterBottom: 0.35, tessellation: 48 }, scene);
+    coreBody.position.y = 0.75; coreBody.material = metalBodyMat; coreBody.parent = charRoot;
 
-    const headVisor = CreateSphere('headVisor', { diameter: 0.48, segments: 48 }, scene);
-    headVisor.position.y = 1.6;
-    headVisor.material = neonVisorMat;
-    headVisor.parent = characterRoot;
+    const headVisor  = CreateSphere('visor',   { diameter: 0.48, segments: 48 }, scene);
+    headVisor.position.y = 1.6; headVisor.material = neonVisorMat; headVisor.parent = charRoot;
 
     const chestPlate = CreateBox('chestPlate', { width: 0.45, height: 0.45, depth: 0.25 }, scene);
-    chestPlate.position.set(0, 0.9, 0.18);
-    chestPlate.material = chestEmissiveMat;
-    chestPlate.parent = characterRoot;
+    chestPlate.position.set(0, 0.9, 0.18); chestPlate.material = chestMat; chestPlate.parent = charRoot;
 
-    const armL = CreateCylinder('armL', { height: 0.8, diameter: 0.18, tessellation: 36 }, scene);
-    armL.position.set(-0.38, 0.95, 0);
-    armL.material = metalDullMat;
-    armL.parent = characterRoot;
+    const mkLimb = (name: string, x: number, y: number) => {
+      const l = CreateCylinder(name, { height: 0.8, diameter: 0.18, tessellation: 36 }, scene);
+      l.position.set(x, y, 0); l.material = metalDullMat; l.parent = charRoot;
+      return l;
+    };
+    const armL = mkLimb('armL', -0.38, 0.95);
+    const armR = mkLimb('armR',  0.38, 0.95);
+    const legL = mkLimb('legL', -0.22, 0.35);
+    const legR = mkLimb('legR',  0.22, 0.35);
 
-    const armR = armL.clone('armR');
-    armR.position.x = 0.38;
-    armR.parent = characterRoot;
-
-    const legL = CreateCylinder('legL', { height: 0.8, diameter: 0.2, tessellation: 36 }, scene);
-    legL.position.set(-0.22, 0.35, 0);
-    legL.material = metalDullMat;
-    legL.parent = characterRoot;
-
-    const legR = legL.clone('legR');
-    legR.position.x = 0.22;
-    legR.parent = characterRoot;
-
-    // Translucent shield
-    const hexForceField = CreateSphere('hexForceField', { diameter: 2.1, segments: 64 }, scene);
-    hexForceField.position.y = 0.9;
+    // Force field
+    const shield = CreateSphere('shield', { diameter: 2.1, segments: 64 }, scene);
+    shield.position.y = 0.9;
     const shieldMat = new StandardMaterial('shieldMat', scene);
-    shieldMat.diffuseColor = new Color3(0.1, 0.8, 1.0);
+    shieldMat.diffuseColor  = new Color3(0.1, 0.8, 1.0);
     shieldMat.emissiveColor = new Color3(0.15, 0.9, 1.0);
     shieldMat.alpha = 0.22;
-    hexForceField.material = shieldMat;
-    hexForceField.parent = characterRoot;
-    hexForceField.isVisible = selectedGear.hasShield;
+    shield.material  = shieldMat;
+    shield.parent    = charRoot;
+    shield.isVisible = selectedGear.hasShield;
 
-    // GLTF Loading and Animation Setup
-    let hasLoadedGltf = false;
-    let loadedRoot: any = null;
-    let isTemporarilyStaggered = false;
-    const loadedAnims: {
-      idle?: any;
-      running?: any;
-      jumping?: any;
-      sliding?: any;
-      stagger?: any;
-      dead?: any;
-    } = {};
+    // ── GLB LOADER ────────────────────────────────────────────────────────────
+    let gltfLoaded    = false;
+    let gltfRoot: any = null;
+    let staggered     = false;
+    const anims: LoadedAnims = {};
+    let animState: AnimState = 'RUNNING';
 
-    let currentAnimState: 'IDLE' | 'RUNNING' | 'JUMPING' | 'SLIDING' | 'STAGGER' | 'DEAD' = 'RUNNING';
+    const findAnim = (groups: any[], keys: string[]) =>
+      groups.find((g: any) => keys.some(k => g.name.toLowerCase().includes(k)));
 
-    const playLoadedAnim = (state: typeof currentAnimState) => {
-      if (currentAnimState === state) return;
-      
-      const prevAnim = loadedAnims[currentAnimState.toLowerCase() as keyof typeof loadedAnims];
-      let nextAnim = loadedAnims[state.toLowerCase() as keyof typeof loadedAnims];
-      
-      if (!nextAnim) {
-        if (state === 'JUMPING' || state === 'SLIDING' || state === 'STAGGER') {
-          nextAnim = loadedAnims.running || loadedAnims.idle;
-        } else if (state === 'DEAD') {
-          nextAnim = loadedAnims.stagger || loadedAnims.idle;
-        }
-      }
-      
-      currentAnimState = state;
-      
-      if (nextAnim) {
-        const loop = (state !== 'JUMPING' && state !== 'STAGGER' && state !== 'DEAD');
-        
-        if (prevAnim && prevAnim !== nextAnim) {
-          let progress = 0;
-          const blendTime = 0.12; // 120ms
-          nextAnim.play(loop);
-          nextAnim.weight = 0.01;
-          
-          const observer = scene.onBeforeRenderObservable.add(() => {
-            progress += engine.getDeltaTime() / 1000;
-            const ratio = Math.min(1.0, progress / blendTime);
-            prevAnim.weight = 1.0 - ratio;
-            nextAnim.weight = ratio;
-            if (ratio >= 1.0) {
-              prevAnim.stop();
-              scene.onBeforeRenderObservable.remove(observer);
-            }
-          });
-        } else {
-          nextAnim.play(loop);
-          nextAnim.weight = 1.0;
-        }
+    const playAnim = (next: AnimState) => {
+      if (animState === next) return;
+      const prev   = anims[animState.toLowerCase() as keyof LoadedAnims];
+      let   target = anims[next.toLowerCase()   as keyof LoadedAnims];
+      if (!target) target = anims.running ?? anims.idle;
+      animState = next;
+      if (!target) return;
+      const loop = !['JUMPING', 'STAGGER', 'DEAD'].includes(next);
+      if (prev && prev !== target) {
+        let t = 0;
+        target.play(loop); target.weight = 0.01;
+        const obs = scene.onBeforeRenderObservable.add(() => {
+          t += engine.getDeltaTime() / 1000;
+          const r = Math.min(1, t / 0.12);
+          prev.weight   = 1 - r;
+          target.weight = r;
+          if (r >= 1) { prev.stop(); scene.onBeforeRenderObservable.remove(obs); }
+        });
+      } else {
+        target.play(loop); target.weight = 1;
       }
     };
 
-    const loadGltfModel = (url: string): Promise<any> => {
-      const lastSlash = url.lastIndexOf('/');
-      const rootUrl = lastSlash !== -1 ? url.substring(0, lastSlash + 1) : '';
-      const fileName = lastSlash !== -1 ? url.substring(lastSlash + 1) : url;
-      return SceneLoader.ImportMeshAsync('', rootUrl, fileName, scene);
-    };
-
-    // Load character model
-    loadGltfModel(primaryGlbUrl)
-      .catch((err) => {
-        console.warn(`Failed to load primary jog glTF (${primaryGlbUrl}), trying fallback idle glTF (${fallbackGlbUrl}):`, err);
-        return loadGltfModel(fallbackGlbUrl);
-      })
-      .then((result) => {
-        console.log('GLTF character model loaded successfully in GameCanvas:', result);
-        const glbRoot = result.meshes[0];
-        glbRoot.parent = characterRoot;
-        glbRoot.position = Vector3.Zero();
-        glbRoot.scaling = new Vector3(1, 1, 1);
-
-        // Apply customization colors immediately to loaded meshes in actual game
-        result.meshes.forEach((mesh: any) => {
-          if (mesh && mesh.material) {
-            const mat = mesh.material;
-            const name = mat.name.toLowerCase();
-            const meshName = mesh.name.toLowerCase();
-
-            if (name.includes('visor') || name.includes('eye') || name.includes('glass') || name.includes('glow') || name.includes('light') || name.includes('emit') || name.includes('neon') ||
-                meshName.includes('visor') || meshName.includes('eye') || meshName.includes('glow') || meshName.includes('glass')) {
-              if ((mat as any).emissiveColor) (mat as any).emissiveColor = Color3.FromHexString(selectedGear.visorColor);
-              if ((mat as any).diffuseColor) (mat as any).diffuseColor = Color3.FromHexString(selectedGear.visorColor);
-              if ((mat as any).albedoColor) (mat as any).albedoColor = Color3.FromHexString(selectedGear.visorColor);
-            }
-            else if (name.includes('chest') || name.includes('reactor') || name.includes('core') || name.includes('heart') ||
-                     meshName.includes('chest') || meshName.includes('reactor') || meshName.includes('core')) {
-              if ((mat as any).emissiveColor) (mat as any).emissiveColor = Color3.FromHexString(selectedGear.chestColor);
-              if ((mat as any).diffuseColor) (mat as any).diffuseColor = Color3.FromHexString(selectedGear.chestColor);
-              if ((mat as any).albedoColor) (mat as any).albedoColor = Color3.FromHexString(selectedGear.chestColor);
-            }
-            else if (name.includes('body') || name.includes('armor') || name.includes('suit') || name.includes('metal') || name.includes('skin') || name.includes('base') || name.includes('plate') || name.includes('chassis') ||
-                     meshName.includes('body') || meshName.includes('armor') || meshName.includes('suit') || meshName.includes('torso') || meshName.includes('chestplate')) {
-              if ((mat as any).diffuseColor) (mat as any).diffuseColor = Color3.FromHexString(selectedGear.armorColor);
-              if ((mat as any).albedoColor) (mat as any).albedoColor = Color3.FromHexString(selectedGear.armorColor);
-            }
-          }
-        });
-
-        // Reparent hexForceField
-        if (hexForceField) {
-          hexForceField.parent = glbRoot;
-        }
-
-        // Dispose procedural skeleton meshes since GLTF loaded successfully
-        if (coreBody) coreBody.dispose();
-        if (headVisor) headVisor.dispose();
-        if (chestPlate) chestPlate.dispose();
-        if (armL) armL.dispose();
-        if (armR) armR.dispose();
-        if (legL) legL.dispose();
-        if (legR) legR.dispose();
-
-        loadedRoot = glbRoot;
-        hasLoadedGltf = true;
-
-        // Store animation groups
-        const animGroups = result.animationGroups;
-        animGroups.forEach((g: any) => {
-          g.stop();
-          g.weight = 0.0;
-        });
-
-        const findAnim = (keywords: string[]) => {
-          return animGroups.find((g: any) => {
-            const n = g.name.toLowerCase();
-            return keywords.some((kw: string) => n.includes(kw));
-          });
-        };
-
-        loadedAnims.idle = findAnim(['cst-ert-idle-a', 'idle', 'hero']);
-        loadedAnims.running = findAnim(['cst-ert-jog-fwd-a', 'jog', 'walk', 'run', 'walk_fwd', 'jog_fwd']);
-        loadedAnims.jumping = findAnim(['cst-ert-jump-start-a', 'cst-ert-jump-apex', 'jump-start', 'jump-apex', 'jump', 'leap', 'air']);
-        loadedAnims.sliding = findAnim(['slide', 'crouch']);
-        loadedAnims.stagger = findAnim(['damage', 'stagger', 'hit', 'pain']);
-        loadedAnims.dead = findAnim(['crash', 'dead', 'die', 'collapse']);
-
-        // Fallback for running animation if no explicit keyword matched
-        if (!loadedAnims.running && animGroups.length > 0) {
-          loadedAnims.running = animGroups[0];
-        }
-
-        // Set initial running animation
-        if (loadedAnims.running) {
-          loadedAnims.running.play(true);
-          loadedAnims.running.weight = 1.0;
-          currentAnimState = 'RUNNING';
-        } else if (loadedAnims.idle) {
-          loadedAnims.idle.play(true);
-          loadedAnims.idle.weight = 1.0;
-          currentAnimState = 'IDLE';
-        }
-        
-        // Re-attach weapon mesh to the newly loaded glTF root
-        if (typeof updateWeaponMesh === 'function' && playerStats) {
-          updateWeaponMesh(playerStats.activeWeapon || WeaponType.NONE);
-        }
-      })
-      .catch((err) => {
-        console.warn('Failed to load any character glTF. Falling back to high-detail procedural meshes:', err);
+    const applyGearColors = (meshes: any[]) => {
+      meshes.forEach((m: any) => {
+        if (!m?.material) return;
+        const mat  = m.material;
+        const mn   = m.name.toLowerCase();
+        const matn = mat.name.toLowerCase();
+        const isVisor = ['visor','eye','glass','glow','light','emit','neon'].some(k => mn.includes(k) || matn.includes(k));
+        const isChest = ['chest','reactor','core','heart'].some(k => mn.includes(k) || matn.includes(k));
+        const isBody  = ['body','armor','suit','metal','skin','base','plate','chassis','torso'].some(k => mn.includes(k) || matn.includes(k));
+        const col = isVisor ? selectedGear.visorColor : isChest ? selectedGear.chestColor : isBody ? selectedGear.armorColor : null;
+        if (!col) return;
+        if (mat.emissiveColor) mat.emissiveColor = Color3.FromHexString(col);
+        if (mat.diffuseColor)  mat.diffuseColor  = Color3.FromHexString(col);
+        if (mat.albedoColor)   mat.albedoColor   = Color3.FromHexString(col);
       });
-
-    // 7. Dynamic Obstacles Spawning & Pooling
-    const activeObstacles: { mesh: Mesh; data: ObstacleData }[] = [];
-    const activeCollectibles: { mesh: Mesh; data: CollectibleData }[] = [];
-
-    const obstacleMaterials: Record<ObstacleType, StandardMaterial> = {
-      [ObstacleType.WALL]: new StandardMaterial('wallMat', scene),
-      [ObstacleType.SPIKE_ROCK]: new StandardMaterial('spikeMat', scene),
-      [ObstacleType.DRONE]: new StandardMaterial('droneMat', scene),
-      [ObstacleType.LOW_BARRIER]: new StandardMaterial('barrierMat', scene),
     };
 
-    obstacleMaterials[ObstacleType.WALL].diffuseColor = new Color3(0.8, 0.1, 0.1);
-    obstacleMaterials[ObstacleType.WALL].emissiveColor = new Color3(0.4, 0.05, 0.05);
+    const loadGLB = (url: string) => {
+      if (characterRef.current) {
+        characterRef.current.getChildMeshes().forEach((m: any) => m.dispose());
+        characterRef.current.dispose();
+        characterRef.current = null;
+      }
+      const slash = url.lastIndexOf('/');
+      return SceneLoader.ImportMeshAsync(
+        '', slash !== -1 ? url.slice(0, slash + 1) : '',
+        slash !== -1 ? url.slice(slash + 1) : url,
+        scene
+      );
+    };
 
-    obstacleMaterials[ObstacleType.SPIKE_ROCK].diffuseColor = new Color3(0.4, 0.3, 0.3);
-    obstacleMaterials[ObstacleType.SPIKE_ROCK].emissiveColor = new Color3(0.2, 0.05, 0.0);
+    loadGLB(PRIMARY_GLB)
+      .catch(() => loadGLB(FALLBACK_GLB))
+      .then((result: any) => {
+        const root = result.meshes[0];
+        root.parent = charRoot;
+        root.position = Vector3.Zero();
+        characterRef.current = root;
+        shield.parent = root;
+        gltfRoot   = root;
+        gltfLoaded = true;
 
-    obstacleMaterials[ObstacleType.DRONE].diffuseColor = new Color3(0.1, 0.8, 0.8);
-    obstacleMaterials[ObstacleType.DRONE].emissiveColor = new Color3(0.0, 0.4, 0.4);
+        applyGearColors(result.meshes);
 
-    obstacleMaterials[ObstacleType.LOW_BARRIER].diffuseColor = new Color3(0.8, 0.8, 0.1);
-    obstacleMaterials[ObstacleType.LOW_BARRIER].emissiveColor = new Color3(0.4, 0.4, 0.05);
+        // Dispose procedural meshes
+        [coreBody, headVisor, chestPlate, armL, armR, legL, legR].forEach(m => m.dispose());
 
-    const coinMat = new StandardMaterial('coinMat', scene);
-    coinMat.emissiveColor = new Color3(0.95, 0.65, 0.0);
+        const groups = result.animationGroups as any[];
+        groups.forEach((g: any) => { g.stop(); g.weight = 0; });
 
-    const energyMat = new StandardMaterial('energyMat', scene);
+        anims.idle    = findAnim(groups, ['cst-ert-idle-a', 'idle', 'hero']);
+        anims.running = findAnim(groups, ['cst-ert-jog-fwd-a', 'jog', 'walk', 'run']);
+        anims.jumping = findAnim(groups, ['cst-ert-jump-start-a', 'jump-start', 'jump-apex', 'jump', 'leap']);
+        anims.sliding = findAnim(groups, ['slide', 'crouch']);
+        anims.stagger = findAnim(groups, ['damage', 'stagger', 'hit', 'pain']);
+        anims.dead    = findAnim(groups, ['crash', 'dead', 'die', 'collapse']);
+        if (!anims.running && groups.length > 0) anims.running = groups[0];
+
+        const start = anims.running ?? anims.idle;
+        if (start) { start.play(true); start.weight = 1; }
+        animState = anims.running ? 'RUNNING' : 'IDLE';
+      })
+      .catch(() => { /* fallback to procedural */ });
+
+    // ── OBSTACLE MATERIALS ────────────────────────────────────────────────────
+    const obsMats: Record<ObstacleType, StandardMaterial> = {
+      [ObstacleType.WALL]: (() => {
+        const m = new StandardMaterial('wall', scene);
+        m.diffuseColor = new Color3(0.8, 0.1, 0.1);
+        m.emissiveColor = new Color3(0.4, 0.05, 0.05);
+        return m;
+      })(),
+      [ObstacleType.SPIKE_ROCK]: (() => {
+        const m = new StandardMaterial('spike', scene);
+        m.diffuseColor = new Color3(0.4, 0.3, 0.3);
+        m.emissiveColor = new Color3(0.2, 0.05, 0);
+        return m;
+      })(),
+      [ObstacleType.DRONE]: (() => {
+        const m = new StandardMaterial('drone', scene);
+        m.diffuseColor = new Color3(0.1, 0.8, 0.8);
+        m.emissiveColor = new Color3(0, 0.4, 0.4);
+        return m;
+      })(),
+      [ObstacleType.LOW_BARRIER]: (() => {
+        const m = new StandardMaterial('barrier', scene);
+        m.diffuseColor = new Color3(0.8, 0.8, 0.1);
+        m.emissiveColor = new Color3(0.4, 0.4, 0.05);
+        return m;
+      })(),
+    };
+
+    const coinMat = new StandardMaterial('coin', scene);
+    coinMat.emissiveColor = new Color3(0.95, 0.65, 0);
+    const energyMat = new StandardMaterial('energy', scene);
     energyMat.emissiveColor = new Color3(0.1, 0.95, 0.1);
-
-    const burstMat = new StandardMaterial('burstMat', scene);
+    const burstMat = new StandardMaterial('burst', scene);
     burstMat.diffuseColor = new Color3(0.9, 0.1, 0.95);
     burstMat.emissiveColor = new Color3(0.75, 0.05, 0.9);
-    burstMat.specularColor = new Color3(1.0, 1.0, 1.0);
+    const bladeMat = new StandardMaterial('blade', scene);
+    bladeMat.diffuseColor = new Color3(1, 0.35, 0);
+    bladeMat.emissiveColor = new Color3(0.95, 0.3, 0);
+    const blasterMat = new StandardMaterial('blaster', scene);
+    blasterMat.diffuseColor = new Color3(0, 0.85, 1);
+    blasterMat.emissiveColor = new Color3(0, 0.75, 0.95);
+    const shieldPUMat = new StandardMaterial('shieldPU', scene);
+    shieldPUMat.diffuseColor = new Color3(0, 0.6, 1);
+    shieldPUMat.emissiveColor = new Color3(0.1, 0.8, 1);
 
-    const powerupBladeMat = new StandardMaterial('powerupBladeMat', scene);
-    powerupBladeMat.diffuseColor = new Color3(1.0, 0.35, 0.0);
-    powerupBladeMat.emissiveColor = new Color3(0.95, 0.3, 0.0);
-    powerupBladeMat.specularColor = new Color3(1.0, 1.0, 1.0);
+    // ── SPAWN HELPERS ─────────────────────────────────────────────────────────
+    const activeObstacles:   { mesh: Mesh; data: ObstacleData }[]   = [];
+    const activeCollectibles: { mesh: Mesh; data: CollectibleData }[] = [];
 
-    const powerupBlasterMat = new StandardMaterial('powerupBlasterMat', scene);
-    powerupBlasterMat.diffuseColor = new Color3(0.0, 0.85, 1.0);
-    powerupBlasterMat.emissiveColor = new Color3(0.0, 0.75, 0.95);
-    powerupBlasterMat.specularColor = new Color3(1.0, 1.0, 1.0);
+    const randLane = () => ([Lane.LEFT, Lane.CENTER, Lane.RIGHT] as Lane[])[Math.floor(Math.random() * 3)];
 
-    const shieldPowerupMat = new StandardMaterial('shieldPowerupMat', scene);
-    shieldPowerupMat.diffuseColor = new Color3(0.0, 0.6, 1.0);
-    shieldPowerupMat.emissiveColor = new Color3(0.1, 0.8, 1.0);
-    shieldPowerupMat.specularColor = new Color3(1.0, 1.0, 1.0);
-
-    const scanMaterial = new StandardMaterial('scanMat', scene);
-    scanMaterial.diffuseColor = new Color3(1.0, 0.15, 0.15);
-    scanMaterial.emissiveColor = new Color3(1.0, 0.15, 0.15);
-    scanMaterial.wireframe = true;
-    scanMaterial.disableDepthWrite = true;
-    scanMaterial.depthFunction = Engine.ALWAYS;
-    scanMaterial.backFaceCulling = false;
-
-    const spawnObstacle = (zPosition: number) => {
-      const typeList = Object.values(ObstacleType);
-      const chosenType = typeList[Math.floor(Math.random() * typeList.length)];
-      const chosenLane = [Lane.LEFT, Lane.CENTER, Lane.RIGHT][Math.floor(Math.random() * 3)];
-
+    const spawnObstacle = (z: number) => {
+      const types = Object.values(ObstacleType) as ObstacleType[];
+      const type  = types[Math.floor(Math.random() * types.length)];
+      const lane  = randLane();
       let mesh: Mesh;
-      if (chosenType === ObstacleType.WALL) {
-        mesh = CreateBox('wall', { width: laneWidth, height: 2.2, depth: 0.5 }, scene);
-        mesh.position.set(chosenLane * laneWidth, 1.1, zPosition);
-      } else if (chosenType === ObstacleType.SPIKE_ROCK) {
+      if (type === ObstacleType.WALL) {
+        mesh = CreateBox('wall', { width: LANE_WIDTH, height: 2.2, depth: 0.5 }, scene);
+        mesh.position.set(lane * LANE_WIDTH, 1.1, z);
+      } else if (type === ObstacleType.SPIKE_ROCK) {
         mesh = CreateCylinder('spike', { height: 1.2, diameterTop: 0, diameterBottom: 0.8, tessellation: 8 }, scene);
-        mesh.position.set(chosenLane * laneWidth, 0.6, zPosition);
-      } else if (chosenType === ObstacleType.DRONE) {
+        mesh.position.set(lane * LANE_WIDTH, 0.6, z);
+      } else if (type === ObstacleType.DRONE) {
         mesh = CreateSphere('drone', { diameter: 0.6, segments: 12 }, scene);
-        mesh.position.set(chosenLane * laneWidth, 1.6, zPosition);
+        mesh.position.set(lane * LANE_WIDTH, 1.6, z);
       } else {
-        mesh = CreateBox('barrier', { width: laneWidth, height: 0.5, depth: 0.4 }, scene);
-        mesh.position.set(chosenLane * laneWidth, 0.25, zPosition);
+        mesh = CreateBox('barrier', { width: LANE_WIDTH, height: 0.5, depth: 0.4 }, scene);
+        mesh.position.set(lane * LANE_WIDTH, 0.25, z);
       }
-
-      mesh.material = obstacleMaterials[chosenType];
-      activeObstacles.push({
-        mesh,
-        data: {
-          id: Math.random().toString(),
-          type: chosenType,
-          lane: chosenLane,
-          zPosition,
-          hasBeenPassed: false
-        }
-      });
+      mesh.material = obsMats[type];
+      activeObstacles.push({ mesh, data: { id: Math.random().toString(), type, lane, zPosition: z, hasBeenPassed: false } });
     };
 
-    const spawnCollectible = (zPosition: number) => {
-      const rand = Math.random();
-      let type: 'COIN' | 'ENERGY_CELL' | 'SHIELD_POWERUP' | 'VELOCITY_BURST' | 'POWERUP_PLASMA_BLADE' | 'POWERUP_ION_BLASTER';
-      if (rand < 0.44) {
-        type = 'COIN';
-      } else if (rand < 0.58) {
-        type = 'ENERGY_CELL';
-      } else if (rand < 0.70) {
-        type = 'SHIELD_POWERUP';
-      } else if (rand < 0.82) {
-        type = 'VELOCITY_BURST';
-      } else if (rand < 0.91) {
-        type = 'POWERUP_PLASMA_BLADE';
-      } else {
-        type = 'POWERUP_ION_BLASTER';
-      }
-      
-      const chosenLane = [Lane.LEFT, Lane.CENTER, Lane.RIGHT][Math.floor(Math.random() * 3)];
-      
+    const spawnCollectible = (z: number) => {
+      const r    = Math.random();
+      const type = r < 0.44 ? 'COIN'
+                 : r < 0.58 ? 'ENERGY_CELL'
+                 : r < 0.70 ? 'SHIELD_POWERUP'
+                 : r < 0.82 ? 'VELOCITY_BURST'
+                 : r < 0.91 ? 'POWERUP_PLASMA_BLADE'
+                 :             'POWERUP_ION_BLASTER';
+      const lane = randLane();
       let mesh: Mesh;
+
       if (type === 'COIN') {
         mesh = CreateCylinder('coin', { height: 0.08, diameter: 0.4, tessellation: 12 }, scene);
         mesh.rotation.x = Math.PI / 2;
-        mesh.position.set(chosenLane * laneWidth, 0.6, zPosition);
+        mesh.position.set(lane * LANE_WIDTH, 0.6, z);
         mesh.material = coinMat;
       } else if (type === 'ENERGY_CELL') {
         mesh = CreateBox('energy', { width: 0.3, height: 0.4, depth: 0.3 }, scene);
-        mesh.position.set(chosenLane * laneWidth, 0.6, zPosition);
+        mesh.position.set(lane * LANE_WIDTH, 0.6, z);
         mesh.material = energyMat;
       } else if (type === 'SHIELD_POWERUP') {
-        // Floating cyber shield star / emblem
-        mesh = CreateSphere('shield_powerup_base', { diameter: 0.35, segments: 12 }, scene);
-        const ring = CreateCylinder('shield_powerup_ring', { height: 0.06, diameter: 0.6, tessellation: 6 }, scene);
-        ring.parent = mesh;
-        ring.rotation.x = Math.PI / 2;
-        ring.material = shieldPowerupMat;
-        mesh.position.set(chosenLane * laneWidth, 0.65, zPosition);
-        mesh.material = shieldPowerupMat;
+        mesh = CreateSphere('shPU', { diameter: 0.35, segments: 12 }, scene);
+        mesh.position.set(lane * LANE_WIDTH, 0.65, z);
+        mesh.material = shieldPUMat;
+        const ring = CreateCylinder('shRing', { height: 0.06, diameter: 0.6, tessellation: 6 }, scene);
+        ring.parent = mesh; ring.rotation.x = Math.PI / 2; ring.material = shieldPUMat;
       } else if (type === 'VELOCITY_BURST') {
-        // High-velocity dual bicone core with custom outer halo ring
-        mesh = CreateCylinder('velocity_burst', { height: 0.5, diameterTop: 0, diameterBottom: 0.35, tessellation: 6 }, scene);
-        const ring = CreateCylinder('burstRing', { height: 0.06, diameter: 0.55, tessellation: 8 }, scene);
-        ring.parent = mesh;
-        ring.material = burstMat;
-        mesh.position.set(chosenLane * laneWidth, 0.7, zPosition);
+        mesh = CreateCylinder('burst', { height: 0.5, diameterTop: 0, diameterBottom: 0.35, tessellation: 6 }, scene);
+        mesh.position.set(lane * LANE_WIDTH, 0.7, z);
         mesh.material = burstMat;
       } else if (type === 'POWERUP_PLASMA_BLADE') {
-        // Floating double-bladed crystal core for Plasma Blade power-up
-        mesh = CreateSphere('powerup_blade_base', { diameter: 0.35, segments: 12 }, scene);
-        const bladePart1 = CreateBox('bladePart1', { width: 0.12, height: 0.75, depth: 0.12 }, scene);
-        bladePart1.parent = mesh;
-        bladePart1.position.y = 0.22;
-        bladePart1.material = powerupBladeMat;
-        const bladePart2 = CreateBox('bladePart2', { width: 0.12, height: 0.75, depth: 0.12 }, scene);
-        bladePart2.parent = mesh;
-        bladePart2.position.y = -0.22;
-        bladePart2.material = powerupBladeMat;
-        mesh.position.set(chosenLane * laneWidth, 0.65, zPosition);
-        mesh.material = powerupBladeMat;
+        mesh = CreateSphere('bladeBase', { diameter: 0.35, segments: 12 }, scene);
+        mesh.position.set(lane * LANE_WIDTH, 0.65, z);
+        mesh.material = bladeMat;
+        const b1 = CreateBox('b1', { width: 0.12, height: 0.75, depth: 0.12 }, scene);
+        b1.parent = mesh; b1.position.y =  0.22; b1.material = bladeMat;
+        const b2 = CreateBox('b2', { width: 0.12, height: 0.75, depth: 0.12 }, scene);
+        b2.parent = mesh; b2.position.y = -0.22; b2.material = bladeMat;
       } else {
-        // Twin-barrel device for Ion Blaster power-up
-        mesh = CreateSphere('powerup_blaster_base', { diameter: 0.35, segments: 12 }, scene);
-        const barrel1 = CreateCylinder('barrel1', { height: 0.6, diameter: 0.1, tessellation: 8 }, scene);
-        barrel1.parent = mesh;
-        barrel1.position.x = -0.12;
-        barrel1.rotation.x = Math.PI / 2;
-        barrel1.material = powerupBlasterMat;
-        const barrel2 = CreateCylinder('barrel2', { height: 0.6, diameter: 0.1, tessellation: 8 }, scene);
-        barrel2.parent = mesh;
-        barrel2.position.x = 0.12;
-        barrel2.rotation.x = Math.PI / 2;
-        barrel2.material = powerupBlasterMat;
-        mesh.position.set(chosenLane * laneWidth, 0.65, zPosition);
-        mesh.material = powerupBlasterMat;
+        mesh = CreateSphere('blasterBase', { diameter: 0.35, segments: 12 }, scene);
+        mesh.position.set(lane * LANE_WIDTH, 0.65, z);
+        mesh.material = blasterMat;
+        const bar1 = CreateCylinder('bar1', { height: 0.6, diameter: 0.1, tessellation: 8 }, scene);
+        bar1.parent = mesh; bar1.position.x = -0.12; bar1.rotation.x = Math.PI / 2; bar1.material = blasterMat;
+        const bar2 = CreateCylinder('bar2', { height: 0.6, diameter: 0.1, tessellation: 8 }, scene);
+        bar2.parent = mesh; bar2.position.x =  0.12; bar2.rotation.x = Math.PI / 2; bar2.material = blasterMat;
       }
 
       activeCollectibles.push({
         mesh,
-        data: {
-          id: Math.random().toString(),
-          type,
-          lane: chosenLane,
-          zPosition,
-          hasBeenCollected: false
-        }
+        data: { id: Math.random().toString(), type: type as any, lane, zPosition: z, hasBeenCollected: false },
       });
     };
 
-    // Pre-populate some obstacles and collectibles far out
     for (let i = 25; i < 150; i += 22) {
       if (Math.random() > 0.3) spawnObstacle(i);
       if (Math.random() > 0.4) spawnCollectible(i + 10);
     }
 
-    // 8. Game Run-Loop variables & Logic
-    const playerStats: PlayerState = {
-      distance: 0,
-      speed: 15.0, // standard forward m/s speed
-      health: 100,
-      maxHealth: 100,
-      energy: 100,
-      maxEnergy: 100,
-      shieldActive: selectedGear.hasShield,
-      shieldRemaining: selectedGear.hasShield ? 100 : 0,
-      score: 0,
-      coins: 0,
-      multiplier: 1,
-      currentLane: Lane.CENTER,
-      targetLaneX: 0,
-      xPosition: 0,
-      isJumping: false,
-      isSliding: false,
-      activeWeapon: selectedGear.weaponType,
-      weaponCharges: selectedGear.weaponType !== WeaponType.NONE ? 5 : 0,
-      bonusScore: 0,
-      destroyCombo: 0,
-      maxDestroyCombo: 0,
-      enemyScanActive: false,
-      enemyScanDurationRemaining: 0,
-      enemyScanCooldownRemaining: 0,
-      proximityLogs: []
-    };
-
-    let currentWeaponMesh: Mesh | null = null;
+    // ── WEAPON MESH ───────────────────────────────────────────────────────────
+    let weaponMesh: Mesh | null = null;
 
     const updateWeaponMesh = (type: WeaponType) => {
-      if (currentWeaponMesh) {
-        currentWeaponMesh.dispose();
-        currentWeaponMesh = null;
-      }
-
+      weaponMesh?.dispose();
+      weaponMesh = null;
       if (type === WeaponType.NONE) return;
+      const parent = gltfLoaded && gltfRoot ? gltfRoot : charRoot;
 
       if (type === WeaponType.PLASMA_BLADE) {
-        const parentNode = (hasLoadedGltf && loadedRoot) ? loadedRoot : (armR || characterRoot);
-        const bladeContainer = CreateBox('plasma_blade_container', { size: 0.01 }, scene);
-        bladeContainer.parent = parentNode;
-        
-        if (parentNode === armR) {
-          bladeContainer.position.set(0, -0.4, 0.1);
-          bladeContainer.rotation.set(Math.PI / 2, 0, 0);
-        } else {
-          bladeContainer.position.set(0.4, 0.8, 0.2);
-          bladeContainer.rotation.set(0.3, 0.2, -0.2);
-        }
-
+        const c = CreateBox('bladeC', { size: 0.01 }, scene);
+        c.parent = parent;
+        c.position.set(0.4, 0.8, 0.2);
+        c.rotation.set(0.3, 0.2, -0.2);
         const hilt = CreateCylinder('hilt', { height: 0.22, diameter: 0.06 }, scene);
-        hilt.parent = bladeContainer;
-        hilt.rotation.x = Math.PI / 2;
-        const hiltMat = new StandardMaterial('hiltMat', scene);
-        hiltMat.diffuseColor = new Color3(0.2, 0.2, 0.25);
-        hilt.material = hiltMat;
-
-        const blade = CreateBox('blade', { width: 0.07, height: 1.0, depth: 0.03 }, scene);
-        blade.parent = bladeContainer;
-        blade.position.z = 0.55;
-        blade.rotation.x = Math.PI / 2;
-        
-        const bladeGlowMat = new StandardMaterial('bladeGlowMat', scene);
-        bladeGlowMat.diffuseColor = new Color3(1.0, 0.35, 0.0);
-        bladeGlowMat.emissiveColor = new Color3(0.95, 0.3, 0.0);
-        bladeGlowMat.specularColor = new Color3(1.0, 1.0, 1.0);
-        blade.material = bladeGlowMat;
-
-        currentWeaponMesh = bladeContainer;
+        hilt.parent = c; hilt.rotation.x = Math.PI / 2;
+        const hm = new StandardMaterial('hiltMat', scene);
+        hm.diffuseColor = new Color3(0.2, 0.2, 0.25); hilt.material = hm;
+        const b = CreateBox('bladeE', { width: 0.07, height: 1.0, depth: 0.03 }, scene);
+        b.parent = c; b.position.z = 0.55; b.rotation.x = Math.PI / 2; b.material = bladeMat;
+        weaponMesh = c;
       } else if (type === WeaponType.BLASTER) {
-        const parentNode = (hasLoadedGltf && loadedRoot) ? loadedRoot : (armR || characterRoot);
-        const blasterContainer = CreateBox('blaster_container', { size: 0.01 }, scene);
-        blasterContainer.parent = parentNode;
+        const c = CreateBox('blasterC', { size: 0.01 }, scene);
+        c.parent = parent; c.position.set(0.4, 0.8, 0.2); c.rotation.set(0.1, 0, 0);
+        const body = CreateBox('blasterB', { width: 0.12, height: 0.16, depth: 0.35 }, scene);
+        body.parent = c; body.position.z = 0.08;
+        const bm = new StandardMaterial('blasterBodyMat', scene); bm.diffuseColor = new Color3(0.25, 0.25, 0.3); body.material = bm;
+        const mk = (name: string, x: number) => {
+          const bar = CreateCylinder(name, { height: 0.28, diameter: 0.04 }, scene);
+          bar.parent = c; bar.position.set(x, 0.02, 0.32); bar.rotation.x = Math.PI / 2; bar.material = blasterMat;
+        };
+        mk('barL', -0.03); mk('barR', 0.03);
+        weaponMesh = c;
+      }
+    };
+    updateWeaponMesh(selectedGear.weaponType);
 
-        if (parentNode === armR) {
-          blasterContainer.position.set(0, -0.4, 0.1);
-          blasterContainer.rotation.set(Math.PI / 2, 0, 0);
-        } else {
-          blasterContainer.position.set(0.4, 0.8, 0.2);
-          blasterContainer.rotation.set(0.1, 0, 0);
-        }
+    // ── PLAYER STATE ──────────────────────────────────────────────────────────
+    const ps: PlayerState = {
+      distance: 0, speed: 15, health: 100, maxHealth: 100,
+      energy: 100, maxEnergy: 100,
+      shieldActive: selectedGear.hasShield,
+      shieldRemaining: selectedGear.hasShield ? 100 : 0,
+      score: 0, coins: 0, multiplier: 1,
+      currentLane: Lane.CENTER, targetLaneX: 0, xPosition: 0,
+      isJumping: false, isSliding: false,
+      activeWeapon: selectedGear.weaponType,
+      weaponCharges: selectedGear.weaponType !== WeaponType.NONE ? 5 : 0,
+      bonusScore: 0, destroyCombo: 0, maxDestroyCombo: 0,
+      enemyScanActive: false, enemyScanDurationRemaining: 0, enemyScanCooldownRemaining: 0,
+      proximityLogs: [], sentinelStatus: 'SECURE', sentinelAnomalies: [],
+      sentinelChecksPassedCount: 0, sentinelConstitutionVersion: 'v1.4-STYX',
+    };
 
-        const body = CreateBox('blaster_body', { width: 0.12, height: 0.16, depth: 0.35 }, scene);
-        body.parent = blasterContainer;
-        body.position.z = 0.08;
-        const bodyMat = new StandardMaterial('blasterBodyMat', scene);
-        bodyMat.diffuseColor = new Color3(0.25, 0.25, 0.3);
-        body.material = bodyMat;
+    let burstActiveLocal = false;
+    let burstTimer       = 0;
+    let scanActive       = false;
+    let scanTimer        = 0;
+    let scanCooldown     = 0;
+    let jumpTime         = 0;
+    let slideTime        = 0;
+    let lastAttackTime   = 0;
+    let gameTime         = 0;
+    let prevStats: PlayerState | null = null;
+    let simAnomalyType: string | null = null;
 
-        const barrelL = CreateCylinder('barrelL', { height: 0.28, diameter: 0.04 }, scene);
-        barrelL.parent = blasterContainer;
-        barrelL.position.set(-0.03, 0.02, 0.32);
-        barrelL.rotation.x = Math.PI / 2;
-        const barrelMat = new StandardMaterial('blasterBarrelMat', scene);
-        barrelMat.diffuseColor = new Color3(0.0, 0.85, 1.0);
-        barrelMat.emissiveColor = new Color3(0.0, 0.75, 0.95);
-        barrelL.material = barrelMat;
+    const activeProjectiles: { mesh: Mesh; lane: Lane; speedZ: number; hitAny: boolean }[] = [];
+    const activeSlashWaves:  { mesh: Mesh; speedZ: number; timeAlive: number; hitAny: boolean }[] = [];
 
-        const barrelR = barrelL.clone('barrelR');
-        barrelR.parent = blasterContainer;
-        barrelR.position.x = 0.03;
+    // Explosion helper
+    const spawnExplosion = (pos: Vector3, color: Color3) => {
+      const exp = CreateSphere('exp', { diameter: 0.5 }, scene);
+      exp.position.copyFrom(pos);
+      const em = new StandardMaterial('expMat', scene); em.emissiveColor = color; exp.material = em;
+      let t = 0;
+      const obs = scene.onBeforeRenderObservable.add(() => {
+        t += engine.getDeltaTime() / 1000;
+        exp.scaling.addInPlace(new Vector3(0.25, 0.25, 0.25));
+        em.alpha = Math.max(0, 1 - t * 5);
+        if (t >= 0.2) { exp.dispose(); scene.onBeforeRenderObservable.remove(obs); }
+      });
+    };
 
-        currentWeaponMesh = blasterContainer;
+    const spawnShards = (pos: Vector3, mat: any) => {
+      for (let j = 0; j < 8; j++) {
+        const s = CreateBox('shard', { size: 0.15 }, scene);
+        s.position.copyFrom(pos); s.material = mat;
+        const v = new Vector3((Math.random() - 0.5) * 8, Math.random() * 5 + 2, Math.random() * 6 + 4);
+        const obs = scene.onBeforeRenderObservable.add(() => {
+          const fd = engine.getDeltaTime() / 1000;
+          s.position.addInPlace(v.scale(fd)); v.y -= 9.81 * fd; s.rotation.x += 0.15;
+          if (s.position.y < -0.5 || s.position.z < -10) { s.dispose(); scene.onBeforeRenderObservable.remove(obs); }
+        });
       }
     };
 
-    updateWeaponMesh(playerStats.activeWeapon || WeaponType.NONE);
-
-    let isBurstActiveLocal = false;
-    let burstTimer = 0.0;
-    const burstDuration = 3.5;
-
-    let scanActive = false;
-    let scanTimer = 0.0;
-    let scanCooldownTimer = 0.0;
-    const scanDurationMax = 5.0;
-    const scanCooldownMax = 18.0;
-
-    const triggerEnemyScan = () => {
+    // ── WEAPONS FIRE ──────────────────────────────────────────────────────────
+    const fireWeapon = () => {
       if (gameState !== GameState.PLAYING) return;
-      if (scanActive) return;
-      if (scanCooldownTimer > 0) {
-        playSynthSFX('no_ammo');
-        return;
-      }
-      if (playerStats.energy < 25.0) {
-        playSynthSFX('no_ammo');
-        return;
-      }
+      if (!ps.activeWeapon || ps.activeWeapon === WeaponType.NONE) return;
+      if (gameTime - lastAttackTime < ATTACK_COOLDOWN) return;
+      if ((ps.weaponCharges ?? 0) <= 0) { playSFX('no_ammo', isMutedRef.current); return; }
+      lastAttackTime = gameTime;
+      ps.weaponCharges!--;
 
-      playerStats.energy -= 25.0;
-      scanActive = true;
-      scanTimer = scanDurationMax;
-      scanCooldownTimer = scanCooldownMax;
+      if (ps.activeWeapon === WeaponType.PLASMA_BLADE) {
+        playSFX('plasma_slash', isMutedRef.current);
+        const wave = CreateCylinder('slash', { height: 0.05, diameter: 1.8, tessellation: 24 }, scene);
+        wave.scaling.set(1, 0.05, 0.45);
+        wave.position.set(ps.xPosition, charRoot.position.y + 0.4, 0.8);
+        wave.rotation.set(0, 0, Math.PI / 4);
+        const wm = new StandardMaterial('slashM', scene);
+        wm.diffuseColor = new Color3(1, 0.3, 0); wm.emissiveColor = new Color3(1, 0.25, 0); wm.alpha = 0.85;
+        wave.material = wm;
+        activeSlashWaves.push({ mesh: wave, speedZ: 28, timeAlive: 0, hitAny: false });
 
-      playerStats.enemyScanActive = true;
-      playerStats.enemyScanDurationRemaining = scanTimer;
-      playerStats.enemyScanCooldownRemaining = scanCooldownTimer;
-
-      playSynthSFX('scan_sweep');
-      triggerVibration([100, 50, 100]);
-    };
-
-    let laneTransitionSpeed = 0.15;
-    let jumpTime = 0;
-    const jumpDuration = 0.8;
-    let slideTime = 0;
-    const slideDuration = 0.7;
-
-    let lastAttackTime = 0;
-    const attackCooldown = 0.35; // 350ms cooldown
-    const activeProjectiles: { mesh: Mesh; lane: Lane; speedZ: number; damageDealt: boolean; hitAny: boolean }[] = [];
-    const activeSlashWaves: { mesh: Mesh; speedZ: number; timeAlive: number; hitAny: boolean }[] = [];
-
-    const activateWeapon = () => {
-      if (gameState !== GameState.PLAYING) return;
-      if (!playerStats.activeWeapon || playerStats.activeWeapon === WeaponType.NONE) return;
-      
-      const now = time;
-      if (now - lastAttackTime < attackCooldown) return;
-      
-      if (playerStats.weaponCharges === undefined || playerStats.weaponCharges <= 0) {
-        playSynthSFX('no_ammo');
-        return;
-      }
-
-      lastAttackTime = now;
-      playerStats.weaponCharges--;
-
-      if (currentWeaponMesh) {
-        const originalZ = currentWeaponMesh.position.z;
-        const originalRotX = currentWeaponMesh.rotation.x;
-        
-        let swingProgress = 0;
-        const animObserver = scene.onBeforeRenderObservable.add(() => {
-          const frameDt = engine.getDeltaTime() / 1000;
-          swingProgress += frameDt;
-          if (swingProgress < 0.1) {
-            if (playerStats.activeWeapon === WeaponType.PLASMA_BLADE) {
-              currentWeaponMesh!.rotation.x = originalRotX + swingProgress * 15;
-            } else {
-              currentWeaponMesh!.position.z = originalZ - 0.15;
-            }
-          } else if (swingProgress < 0.3) {
-            if (playerStats.activeWeapon === WeaponType.PLASMA_BLADE) {
-              currentWeaponMesh!.rotation.x += (originalRotX - currentWeaponMesh!.rotation.x) * 0.2;
-            } else {
-              currentWeaponMesh!.position.z += (originalZ - currentWeaponMesh!.position.z) * 0.2;
-            }
-          } else {
-            if (currentWeaponMesh) {
-              currentWeaponMesh!.position.z = originalZ;
-              currentWeaponMesh!.rotation.x = originalRotX;
-            }
-            scene.onBeforeRenderObservable.remove(animObserver);
-          }
-        });
-      }
-
-      if (playerStats.activeWeapon === WeaponType.PLASMA_BLADE) {
-        playSynthSFX('plasma_slash');
-
-        const slashWave = CreateCylinder('slashWave', { height: 0.05, diameter: 1.8, tessellation: 24, subdivisions: 1 }, scene);
-        slashWave.scaling.set(1, 0.05, 0.45);
-        slashWave.position.set(playerStats.xPosition, characterRoot.position.y + 0.4, 0.8);
-        slashWave.rotation.set(0, 0, Math.PI / 4);
-        
-        const slashMat = new StandardMaterial('slashWaveMat', scene);
-        slashMat.diffuseColor = new Color3(1.0, 0.3, 0.0);
-        slashMat.emissiveColor = new Color3(1.0, 0.25, 0.0);
-        slashMat.alpha = 0.85;
-        slashWave.material = slashMat;
-
-        activeSlashWaves.push({
-          mesh: slashWave,
-          speedZ: 28.0,
-          timeAlive: 0,
-          hitAny: false
-        });
-
-      } else if (playerStats.activeWeapon === WeaponType.BLASTER) {
-        playSynthSFX('ion_shoot');
-
-        const muzzleFlash = CreateSphere('muzzle', { diameter: 0.3 }, scene);
-        muzzleFlash.position.set(playerStats.xPosition + 0.4, characterRoot.position.y + 0.8, 0.6);
-        const flashMat = new StandardMaterial('flashMat', scene);
-        flashMat.emissiveColor = new Color3(0.0, 1.0, 1.0);
-        muzzleFlash.material = flashMat;
-        let flashTime = 0;
-        const flashObs = scene.onBeforeRenderObservable.add(() => {
-          flashTime += engine.getDeltaTime() / 1000;
-          muzzleFlash.scaling.addInPlace(new Vector3(0.15, 0.15, 0.15));
-          if (flashTime >= 0.08) {
-            muzzleFlash.dispose();
-            scene.onBeforeRenderObservable.remove(flashObs);
-          }
-        });
-
-        const proj = CreateCylinder('ion_projectile', { height: 0.6, diameter: 0.08, tessellation: 6 }, scene);
+      } else if (ps.activeWeapon === WeaponType.BLASTER) {
+        playSFX('ion_shoot', isMutedRef.current);
+        const proj = CreateCylinder('proj', { height: 0.6, diameter: 0.08, tessellation: 6 }, scene);
         proj.rotation.x = Math.PI / 2;
-        proj.position.set(playerStats.xPosition, characterRoot.position.y + 0.75, 0.7);
-        
-        const projMat = new StandardMaterial('projMat', scene);
-        projMat.diffuseColor = new Color3(0.0, 0.9, 1.0);
-        projMat.emissiveColor = new Color3(0.0, 0.85, 1.0);
-        proj.material = projMat;
-
-        activeProjectiles.push({
-          mesh: proj,
-          lane: playerStats.currentLane,
-          speedZ: 65.0,
-          damageDealt: false,
-          hitAny: false
-        });
+        proj.position.set(ps.xPosition, charRoot.position.y + 0.75, 0.7);
+        const pm = new StandardMaterial('projM', scene);
+        pm.diffuseColor = new Color3(0, 0.9, 1); pm.emissiveColor = new Color3(0, 0.85, 1); proj.material = pm;
+        activeProjectiles.push({ mesh: proj, lane: ps.currentLane, speedZ: 65, hitAny: false });
       }
     };
 
-    // Keyboard Action handlers
-    const handleKeyDown = (e: KeyboardEvent) => {
+    // ── SCAN ──────────────────────────────────────────────────────────────────
+    const triggerScan = () => {
+      if (gameState !== GameState.PLAYING || scanActive || scanCooldown > 0) return;
+      if (ps.energy < 25) { playSFX('no_ammo', isMutedRef.current); return; }
+      ps.energy -= 25; scanActive = true; scanTimer = SCAN_DURATION_MAX; scanCooldown = SCAN_COOLDOWN_MAX;
+      playSFX('scan_sweep', isMutedRef.current); triggerVibration([100, 50, 100]);
+    };
+
+    // ── KEYBOARD ──────────────────────────────────────────────────────────────
+    const onKeyDown = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
-      if (k === 'arrowleft' || k === 'a') {
-        if (playerStats.currentLane === Lane.CENTER) {
-          playerStats.currentLane = Lane.LEFT;
-        } else if (playerStats.currentLane === Lane.RIGHT) {
-          playerStats.currentLane = Lane.CENTER;
-        }
+      if (k === 'arrowleft'  || k === 'a') {
+        if (ps.currentLane === Lane.CENTER) ps.currentLane = Lane.LEFT;
+        else if (ps.currentLane === Lane.RIGHT) ps.currentLane = Lane.CENTER;
       } else if (k === 'arrowright' || k === 'd') {
-        if (playerStats.currentLane === Lane.CENTER) {
-          playerStats.currentLane = Lane.RIGHT;
-        } else if (playerStats.currentLane === Lane.LEFT) {
-          playerStats.currentLane = Lane.CENTER;
-        }
-      } else if ((k === 'arrowup' || k === 'w' || k === ' ') && !playerStats.isJumping && !playerStats.isSliding) {
-        playerStats.isJumping = true;
-        jumpTime = 0;
-        playSynthSFX('jump');
-      } else if ((k === 'arrowdown' || k === 's') && !playerStats.isSliding && !playerStats.isJumping) {
-        playerStats.isSliding = true;
-        slideTime = 0;
-        playSynthSFX('slide');
+        if (ps.currentLane === Lane.CENTER) ps.currentLane = Lane.RIGHT;
+        else if (ps.currentLane === Lane.LEFT)  ps.currentLane = Lane.CENTER;
+      } else if ((k === 'arrowup' || k === 'w' || k === ' ') && !ps.isJumping && !ps.isSliding) {
+        ps.isJumping = true; jumpTime = 0;
+        playSFX('jump', isMutedRef.current);
+        if (k === ' ') e.preventDefault();
+      } else if ((k === 'arrowdown' || k === 's') && !ps.isSliding && !ps.isJumping) {
+        ps.isSliding = true; slideTime = 0;
+        playSFX('slide', isMutedRef.current);
       } else if (k === 'f' || k === 'e') {
-        activateWeapon();
+        fireWeapon();
       } else if (k === 'q' || k === 'r') {
-        triggerEnemyScan();
+        triggerScan();
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
 
-    const handlePointerDown = (e: PointerEvent) => {
+    const onPointerDown = (e: PointerEvent) => {
       if (gameState !== GameState.PLAYING) return;
       if ((e.target as HTMLElement).closest('button')) return;
-      activateWeapon();
+      fireWeapon();
     };
-    window.addEventListener('pointerdown', handlePointerDown);
 
-    const handleScanTrigger = () => {
-      triggerEnemyScan();
+    const onScanEvent  = () => triggerScan();
+    const onAnomalyEvt = (e: Event) => {
+      simAnomalyType = (e as CustomEvent).detail?.type ?? 'speed';
     };
-    window.addEventListener('cyber-runner-trigger-scan', handleScanTrigger);
 
-    let time = 0;
+    window.addEventListener('keydown',                    onKeyDown);
+    window.addEventListener('pointerdown',                onPointerDown);
+    window.addEventListener('cyber-runner-trigger-scan',  onScanEvent);
+    window.addEventListener('cyber-runner-trigger-anomaly', onAnomalyEvt);
+
+    // ── RENDER LOOP ───────────────────────────────────────────────────────────
     scene.onBeforeRenderObservable.add(() => {
-      const dt = engine.getDeltaTime() / 1000;
-      time += dt;
+      const dt   = engine.getDeltaTime() / 1000;
+      gameTime  += dt;
 
-      // Update Enemy Scan ability state
+      // ── SCAN UPDATE ─────────────────────────────────────────────────────────
       if (scanActive) {
-        scanTimer -= dt;
-        playerStats.enemyScanActive = true;
-        playerStats.enemyScanDurationRemaining = Math.max(0, scanTimer);
-        
-        // Continuous moderate energy drain while active (5% energy per second)
-        playerStats.energy = Math.max(0, playerStats.energy - dt * 5.0);
-        
-        if (scanTimer <= 0) {
-          scanActive = false;
-          playerStats.enemyScanActive = false;
-          playerStats.enemyScanDurationRemaining = 0;
-          playSynthSFX('no_ammo');
-        }
+        scanTimer  -= dt;
+        ps.energy   = Math.max(0, ps.energy - dt * 5);
+        ps.enemyScanActive = true;
+        ps.enemyScanDurationRemaining = Math.max(0, scanTimer);
+        if (scanTimer <= 0) { scanActive = false; ps.enemyScanActive = false; }
       } else {
-        playerStats.enemyScanActive = false;
-        playerStats.enemyScanDurationRemaining = 0;
+        ps.enemyScanActive = false;
+        ps.enemyScanDurationRemaining = 0;
       }
+      if (scanCooldown > 0) { scanCooldown -= dt; ps.enemyScanCooldownRemaining = Math.max(0, scanCooldown); }
+      else ps.enemyScanCooldownRemaining = 0;
 
-      if (scanCooldownTimer > 0) {
-        scanCooldownTimer -= dt;
-        playerStats.enemyScanCooldownRemaining = Math.max(0, scanCooldownTimer);
-      } else {
-        playerStats.enemyScanCooldownRemaining = 0;
-      }
-
-      // --- UPDATE PROCEDURAL SKYBOX ATMOSPHERE ---
-      if (Math.abs(playerStats.distance - lastSkyboxUpdateDist) >= 2.0) {
-        lastSkyboxUpdateDist = playerStats.distance;
-        updateSkybox(playerStats.distance);
-      }
-
-      // Exponential speed scaling based on player's distance
-      const distanceFactor = playerStats.distance / 1000;
-      const baseSpeed = 15.0 * Math.exp(distanceFactor * 0.22);
-
-      if (isBurstActiveLocal) {
+      // ── SPEED ───────────────────────────────────────────────────────────────
+      const df = ps.distance / 1000;
+      const baseSpeed = 15 * Math.exp(df * 0.22);
+      if (burstActiveLocal) {
         burstTimer -= dt;
-        if (burstTimer <= 0) {
-          isBurstActiveLocal = false;
-          setIsBurstActive(false);
-        }
-        playerStats.speed = baseSpeed + 30.0; // Flat massive speed boost on top of current base speed
-        playerStats.isBurstActive = true;
-        playerStats.burstTimeRemaining = burstTimer;
+        if (burstTimer <= 0) { burstActiveLocal = false; setIsBurstActive(false); }
+        ps.speed = baseSpeed + 30;
       } else {
-        playerStats.speed = baseSpeed;
-        playerStats.isBurstActive = false;
-        playerStats.burstTimeRemaining = 0;
+        ps.speed = baseSpeed;
       }
 
-      // Camera FOV shake and target rumble during Velocity Burst
-      if (isBurstActiveLocal) {
-        const shakeFrequency = 60.0; // high frequency vibration
-        const shakeAmplitude = 0.018; // fov oscillations
-        const fovExpansion = 0.18; // warp speed perspective zoom
-        camera.fov = baseFov + fovExpansion + Math.sin(time * shakeFrequency) * shakeAmplitude;
-        
-        camera.target.x = (Math.random() - 0.5) * 0.06;
-        camera.target.y = 1.2 + (Math.random() - 0.5) * 0.06;
-      } else {
-        // Smoothly ease camera back to default settings
-        camera.fov += (baseFov - camera.fov) * 0.12;
-        camera.target.x += (0 - camera.target.x) * 0.12;
-        camera.target.y += (1.2 - camera.target.y) * 0.12;
-      }
+      // Camera FOV during burst
+      camera.fov = burstActiveLocal
+        ? baseFov + 0.18 + Math.sin(gameTime * 60) * 0.018
+        : camera.fov + (baseFov - camera.fov) * 0.12;
 
-      // --- 5.5. UPDATE CYBER ACID RAIN PARTICLES ---
-      const currentSpeed = playerStats.speed;
-      const avgFallSpeed = 13.5;
-      const rainFallAngle = Math.atan2(-currentSpeed, -avgFallSpeed);
-
-      // Scale rain density / visibility with speed (faster runner = denser rain feel)
-      rainMat.alpha = 0.3 + (currentSpeed / 25.0) * 0.45;
-
-      rainParticles.forEach((p) => {
-        // Move downward on Y and backward on Z relative to player speed
+      // ── RAIN ────────────────────────────────────────────────────────────────
+      const rainAngle = Math.atan2(-ps.speed, -13.5);
+      rainMat.alpha   = 0.3 + (ps.speed / 25) * 0.45;
+      rainDrops.forEach(p => {
         p.mesh.position.y -= p.speedY * dt;
-        p.mesh.position.z -= currentSpeed * dt;
-
-        // Dynamic pitch rotation based on relative forward wind speed
-        p.mesh.rotation.x = rainFallAngle;
-
-        // Scale length with speed to emphasize warp-speed acceleration streak
-        const streakScale = 1.0 + (currentSpeed / 15.0) * 0.8;
-        p.mesh.scaling.y = streakScale;
-
-        // Recycle particle if it passes behind user or hits the road
-        if (p.mesh.position.y < 0.05 || p.mesh.position.z < -10.0) {
-          p.mesh.position.y = Math.random() * 6 + 7.0; // spawn high up
-          p.mesh.position.z = Math.random() * 50 + 25.0; // spawn far ahead down the track
-          p.mesh.position.x = (Math.random() - 0.5) * 14; // random horizontal offset
-          p.speedY = 11 + Math.random() * 5; // randomize new fall velocity
+        p.mesh.position.z -= ps.speed  * dt;
+        p.mesh.rotation.x  = rainAngle;
+        p.mesh.scaling.y   = 1 + (ps.speed / 15) * 0.8;
+        if (p.mesh.position.y < 0.05 || p.mesh.position.z < -10) {
+          p.mesh.position.set((Math.random() - 0.5) * 14, Math.random() * 6 + 7, Math.random() * 50 + 25);
+          p.speedY = 11 + Math.random() * 5;
         }
       });
 
-      // Travel distance
-      const frameDist = playerStats.speed * dt;
-      playerStats.distance += frameDist;
-      playerStats.score = Math.floor(playerStats.distance * 1.5) + playerStats.coins * 50 + (playerStats.bonusScore || 0);
+      // ── DISTANCE & SCORE ────────────────────────────────────────────────────
+      const fd = ps.speed * dt;
+      ps.distance += fd;
+      ps.score     = Math.floor(ps.distance * 1.5) + ps.coins * 50 + (ps.bonusScore ?? 0);
 
-      // Linear lane interpolation
-      playerStats.targetLaneX = playerStats.currentLane * laneWidth;
-      playerStats.xPosition += (playerStats.targetLaneX - playerStats.xPosition) * laneTransitionSpeed;
+      // ── SECTOR TRANSITIONS ──────────────────────────────────────────────────
+      if (sectorFlash > 0.01) sectorFlash = Math.max(0, sectorFlash - dt * 2.2);
+      const { current: sec } = getCurrentSector(ps.distance);
+      if (sec.name !== lastSectorName) {
+        lastSectorName = sec.name;
+        sectorFlash    = 1;
+        playSFX('speed_boost', isMutedRef.current);
+        triggerVibration([120, 80, 120, 80]);
+        borderMat.emissiveColor = Color3.FromHexString(sec.color);
+        rainMat.diffuseColor    = Color3.FromHexString(sec.rainColor);
+        rainMat.emissiveColor   = Color3.FromHexString(sec.rainColor);
+        window.dispatchEvent(new CustomEvent('cyber-runner-sector-swap', { detail: sec }));
+      }
 
-      // Handle jump height calculation
-      let jumpY = 0.0;
-      if (playerStats.isJumping) {
+      if (Math.abs(ps.distance - lastSkyDist) >= 2 || sectorFlash > 0.01) {
+        lastSkyDist = ps.distance;
+        updateSkybox(ps.distance);
+      }
+
+      // ── LANE & JUMP & SLIDE ─────────────────────────────────────────────────
+      ps.targetLaneX = ps.currentLane * LANE_WIDTH;
+      ps.xPosition  += (ps.targetLaneX - ps.xPosition) * 0.15;
+
+      let jumpY = 0;
+      if (ps.isJumping) {
         jumpTime += dt;
-        const progress = jumpTime / jumpDuration;
-        if (progress >= 1.0) {
-          playerStats.isJumping = false;
-        } else {
-          // Parabolic jump arc
-          jumpY = Math.sin(progress * Math.PI) * 1.45;
-        }
+        if (jumpTime >= JUMP_DURATION) { ps.isJumping = false; }
+        else jumpY = Math.sin((jumpTime / JUMP_DURATION) * Math.PI) * 1.45;
       }
 
-      // Handle slide height scaling
-      if (playerStats.isSliding) {
+      if (ps.isSliding) {
         slideTime += dt;
-        if (slideTime >= slideDuration) {
-          playerStats.isSliding = false;
-          if (!hasLoadedGltf) {
-            coreBody.scaling.y = 1.0;
-            coreBody.position.y = 0.75;
-            headVisor.position.y = 1.6;
-          }
-
-          if (hasLoadedGltf && loadedRoot) {
-            loadedRoot.scaling.y = 1.0;
-            loadedRoot.position.y = 0;
-          }
-        } else {
-          if (!hasLoadedGltf) {
-            coreBody.scaling.y = 0.5;
-            coreBody.position.y = 0.35;
-            headVisor.position.y = 0.8;
-          }
-        }
+        if (slideTime >= SLIDE_DURATION) {
+          ps.isSliding = false;
+          if (gltfLoaded && gltfRoot) { gltfRoot.scaling.y = 1; gltfRoot.position.y = 0; }
+        } else if (gltfLoaded && gltfRoot) { gltfRoot.scaling.y = 0.55; gltfRoot.position.y = -0.3; }
       }
 
-      // Position character root mesh
-      characterRoot.position.set(playerStats.xPosition, jumpY + 0.08, 0);
+      charRoot.position.set(ps.xPosition, jumpY + 0.08, 0);
 
-      // 9. Synchronize model animations / Swings
-      if (hasLoadedGltf) {
-        if (playerStats.health <= 0) {
-          playLoadedAnim('DEAD');
-        } else if (isTemporarilyStaggered) {
-          playLoadedAnim('STAGGER');
-        } else if (playerStats.isJumping) {
-          playLoadedAnim('JUMPING');
-        } else if (playerStats.isSliding) {
-          playLoadedAnim('SLIDING');
-          if (!loadedAnims.sliding && loadedRoot) {
-            loadedRoot.scaling.y = 0.55;
-            loadedRoot.position.y = -0.3;
-          }
-        } else {
-          playLoadedAnim('RUNNING');
-        }
+      // ── ANIMATION STATE MACHINE ──────────────────────────────────────────────
+      if (gltfLoaded) {
+        if (ps.health <= 0)   playAnim('DEAD');
+        else if (staggered)   playAnim('STAGGER');
+        else if (ps.isJumping) playAnim('JUMPING');
+        else if (ps.isSliding) playAnim('SLIDING');
+        else                   playAnim('RUNNING');
       } else {
-        if (!playerStats.isJumping && !playerStats.isSliding) {
-          const runCycle = (playerStats.distance * 0.45);
-          armL.rotation.x = Math.sin(runCycle) * 0.85;
-          armR.rotation.x = -Math.sin(runCycle) * 0.85;
-          legL.rotation.x = -Math.sin(runCycle) * 0.85;
-          legR.rotation.x = Math.sin(runCycle) * 0.85;
-        } else if (playerStats.isJumping) {
-          armL.rotation.x = -0.5;
-          armR.rotation.x = -0.5;
-          legL.rotation.x = 0.3;
-          legR.rotation.x = 0.3;
-        } else if (playerStats.isSliding) {
-          armL.rotation.x = 1.2;
-          armR.rotation.x = 1.2;
-          legL.rotation.x = -1.0;
-          legR.rotation.x = -1.0;
+        // Procedural limb animation fallback
+        if (!ps.isJumping && !ps.isSliding) {
+          const c = ps.distance * 0.45;
+          armL.rotation.x =  Math.sin(c) * 0.85;
+          armR.rotation.x = -Math.sin(c) * 0.85;
+          legL.rotation.x = -Math.sin(c) * 0.85;
+          legR.rotation.x =  Math.sin(c) * 0.85;
         }
       }
 
-      // Slowly decay energy bar
-      playerStats.energy = Math.max(0, playerStats.energy - dt * 2.5);
-
-      // Slowly decay shield charge level and update 3D mesh transparency
-      if (playerStats.shieldActive) {
-        playerStats.shieldRemaining = Math.max(0, (playerStats.shieldRemaining || 100) - dt * 1.5);
-        hexForceField.isVisible = true;
-        if (hexForceField.material) {
-          (hexForceField.material as StandardMaterial).alpha = 0.05 + 0.17 * (playerStats.shieldRemaining / 100);
-        }
-        if (playerStats.shieldRemaining <= 0) {
-          playerStats.shieldActive = false;
-          hexForceField.isVisible = false;
-        }
+      // ── ENERGY & SHIELD ─────────────────────────────────────────────────────
+      ps.energy = Math.max(0, ps.energy - dt * 2.5);
+      if (ps.shieldActive) {
+        ps.shieldRemaining = Math.max(0, (ps.shieldRemaining ?? 100) - dt * 1.5);
+        shield.isVisible = true;
+        (shield.material as StandardMaterial).alpha = 0.05 + 0.17 * (ps.shieldRemaining / 100);
+        if (ps.shieldRemaining <= 0) { ps.shieldActive = false; shield.isVisible = false; }
       } else {
-        hexForceField.isVisible = false;
+        shield.isVisible = false;
       }
 
-      // Weapon sway/bobbing matching running cadence
-      if (currentWeaponMesh && playerStats.activeWeapon !== WeaponType.NONE) {
-        const swayCycle = playerStats.distance * 0.45;
-        if (playerStats.activeWeapon === WeaponType.PLASMA_BLADE) {
-          currentWeaponMesh.rotation.z = Math.sin(swayCycle) * 0.08;
-        } else {
-          currentWeaponMesh.position.y = (hasLoadedGltf ? 0.8 : -0.4) + Math.cos(swayCycle) * 0.03;
-        }
-      }
-
-      // Move and update weapon projectiles (Ion Blaster)
+      // ── PROJECTILES ─────────────────────────────────────────────────────────
       for (let i = activeProjectiles.length - 1; i >= 0; i--) {
         const proj = activeProjectiles[i];
         proj.mesh.position.z += proj.speedZ * dt;
-
-        let hitObstacle = false;
-        activeObstacles.forEach((obs) => {
-          if (obs.data.hasBeenPassed || hitObstacle) return;
-          
-          const isSameLane = obs.data.lane === proj.lane;
-          const zDist = Math.abs(obs.mesh.position.z - proj.mesh.position.z);
-          
-          if (isSameLane && zDist < 1.4) {
-            obs.data.hasBeenPassed = true;
-            hitObstacle = true;
-            proj.hitAny = true;
+        let hit = false;
+        activeObstacles.forEach(obs => {
+          if (obs.data.hasBeenPassed || hit) return;
+          if (obs.data.lane === proj.lane && Math.abs(obs.mesh.position.z - proj.mesh.position.z) < 1.4) {
+            obs.data.hasBeenPassed = true; hit = true; proj.hitAny = true;
             obs.mesh.scaling.set(0.01, 0.01, 0.01);
-            playSynthSFX('slam');
-            triggerVibration(30);
-            
-            playerStats.obstaclesDestroyed = (playerStats.obstaclesDestroyed || 0) + 1;
-            playerStats.destroyCombo = (playerStats.destroyCombo || 0) + 1;
-            if (playerStats.destroyCombo > (playerStats.maxDestroyCombo || 0)) {
-              playerStats.maxDestroyCombo = playerStats.destroyCombo;
-            }
-            const comboMult = Math.min(10, 1 + Math.floor(playerStats.destroyCombo / 3));
-            const pts = 150 * comboMult;
-            playerStats.bonusScore = (playerStats.bonusScore || 0) + pts;
-
-            // Neon explosion visual effect
-            const exp = CreateSphere('ion_exp', { diameter: 0.5 }, scene);
-            exp.position.copyFrom(obs.mesh.position);
-            const expMat = new StandardMaterial('expMat', scene);
-            expMat.emissiveColor = new Color3(0, 0.9, 1);
-            exp.material = expMat;
-            let expTime = 0;
-            const expObs = scene.onBeforeRenderObservable.add(() => {
-              const frameDt = engine.getDeltaTime() / 1000;
-              expTime += frameDt;
-              exp.scaling.addInPlace(new Vector3(0.25, 0.25, 0.25));
-              expMat.alpha = Math.max(0, 1 - expTime * 5);
-              if (expTime >= 0.2) {
-                exp.dispose();
-                scene.onBeforeRenderObservable.remove(expObs);
-              }
-            });
-
-            // Burst shards
-            for (let j = 0; j < 8; j++) {
-              const shard = CreateBox('shard', { size: 0.15 }, scene);
-              shard.position.copyFrom(obs.mesh.position);
-              shard.material = obs.mesh.material;
-              const vel = new Vector3(
-                (Math.random() - 0.5) * 8,
-                Math.random() * 5 + 2,
-                Math.random() * 6 + 4
-              );
-              const sObs = scene.onBeforeRenderObservable.add(() => {
-                const frameDt = engine.getDeltaTime() / 1000;
-                shard.position.addInPlace(vel.scale(frameDt));
-                vel.y -= 9.81 * frameDt;
-                shard.rotation.x += 0.15;
-                if (shard.position.y < -0.5 || shard.position.z < -10) {
-                  shard.dispose();
-                  scene.onBeforeRenderObservable.remove(sObs);
-                }
-              });
-            }
+            playSFX('slam', isMutedRef.current); triggerVibration(30);
+            ps.destroyCombo++; if (ps.destroyCombo > ps.maxDestroyCombo!) ps.maxDestroyCombo = ps.destroyCombo;
+            ps.bonusScore = (ps.bonusScore ?? 0) + 150 * Math.min(10, 1 + Math.floor(ps.destroyCombo / 3));
+            spawnExplosion(obs.mesh.position, new Color3(0, 0.9, 1));
+            spawnShards(obs.mesh.position, obs.mesh.material);
           }
         });
-
-        if (hitObstacle || proj.mesh.position.z > 100.0) {
-          if (!proj.hitAny) {
-            playerStats.destroyCombo = 0;
-          }
-          proj.mesh.dispose();
-          activeProjectiles.splice(i, 1);
+        if (hit || proj.mesh.position.z > 100) {
+          if (!proj.hitAny) ps.destroyCombo = 0;
+          proj.mesh.dispose(); activeProjectiles.splice(i, 1);
         }
       }
 
-      // Move and update weapon slash waves (Plasma Blade)
+      // ── SLASH WAVES ──────────────────────────────────────────────────────────
       for (let i = activeSlashWaves.length - 1; i >= 0; i--) {
-        const wave = activeSlashWaves[i];
-        wave.timeAlive += dt;
-        wave.mesh.position.z += wave.speedZ * dt;
-        
-        wave.mesh.scaling.x += dt * 4.5;
-        wave.mesh.scaling.z += dt * 1.5;
-        if (wave.mesh.material) {
-          (wave.mesh.material as StandardMaterial).alpha = Math.max(0, 0.85 - (wave.timeAlive / 0.35) * 0.85);
-        }
-
-        activeObstacles.forEach((obs) => {
+        const w = activeSlashWaves[i];
+        w.timeAlive += dt;
+        w.mesh.position.z += w.speedZ * dt;
+        w.mesh.scaling.x  += dt * 4.5;
+        w.mesh.scaling.z  += dt * 1.5;
+        (w.mesh.material as StandardMaterial).alpha = Math.max(0, 0.85 - (w.timeAlive / 0.35) * 0.85);
+        activeObstacles.forEach(obs => {
           if (obs.data.hasBeenPassed) return;
-          const isNearZ = Math.abs(obs.mesh.position.z - wave.mesh.position.z) < 1.4;
-          const isCloseX = Math.abs(obs.mesh.position.x - wave.mesh.position.x) < 2.5;
-          
-          if (isNearZ && isCloseX) {
-            wave.hitAny = true;
-            obs.data.hasBeenPassed = true;
+          if (Math.abs(obs.mesh.position.z - w.mesh.position.z) < 1.4 &&
+              Math.abs(obs.mesh.position.x - w.mesh.position.x) < 2.5) {
+            w.hitAny = true; obs.data.hasBeenPassed = true;
             obs.mesh.scaling.set(0.01, 0.01, 0.01);
-            playSynthSFX('slam');
-            triggerVibration(40);
-            
-            playerStats.obstaclesDestroyed = (playerStats.obstaclesDestroyed || 0) + 1;
-            playerStats.destroyCombo = (playerStats.destroyCombo || 0) + 1;
-            if (playerStats.destroyCombo > (playerStats.maxDestroyCombo || 0)) {
-              playerStats.maxDestroyCombo = playerStats.destroyCombo;
-            }
-            const comboMult = Math.min(10, 1 + Math.floor(playerStats.destroyCombo / 3));
-            const pts = 150 * comboMult;
-            playerStats.bonusScore = (playerStats.bonusScore || 0) + pts;
-
-            for (let j = 0; j < 8; j++) {
-              const shard = CreateBox('shard', { size: 0.15 }, scene);
-              shard.position.copyFrom(obs.mesh.position);
-              shard.material = obs.mesh.material;
-              const vel = new Vector3(
-                (Math.random() - 0.5) * 8,
-                Math.random() * 5 + 2,
-                Math.random() * 6 + 4
-              );
-              const sObs = scene.onBeforeRenderObservable.add(() => {
-                const frameDt = engine.getDeltaTime() / 1000;
-                shard.position.addInPlace(vel.scale(frameDt));
-                vel.y -= 9.81 * frameDt;
-                shard.rotation.x += 0.15;
-                if (shard.position.y < -0.5 || shard.position.z < -10) {
-                  shard.dispose();
-                  scene.onBeforeRenderObservable.remove(sObs);
-                }
-              });
-            }
+            playSFX('slam', isMutedRef.current); triggerVibration(40);
+            ps.destroyCombo++; if (ps.destroyCombo > ps.maxDestroyCombo!) ps.maxDestroyCombo = ps.destroyCombo;
+            ps.bonusScore = (ps.bonusScore ?? 0) + 150 * Math.min(10, 1 + Math.floor(ps.destroyCombo / 3));
+            spawnShards(obs.mesh.position, obs.mesh.material);
           }
         });
-
-        if (wave.timeAlive >= 0.35) {
-          if (!wave.hitAny) {
-            playerStats.destroyCombo = 0;
-          }
-          wave.mesh.dispose();
-          activeSlashWaves.splice(i, 1);
+        if (w.timeAlive >= 0.35) {
+          if (!w.hitAny) ps.destroyCombo = 0;
+          w.mesh.dispose(); activeSlashWaves.splice(i, 1);
         }
       }
 
-      // Rotate coins and collectibles
-      activeCollectibles.forEach((col) => {
-        col.mesh.rotation.y += dt * 3.0;
-      });
+      // ── MOVE OBSTACLES ───────────────────────────────────────────────────────
+      activeObstacles.forEach(obs => {
+        obs.mesh.position.z -= fd;
+        obs.data.zPosition   = obs.mesh.position.z;
 
-      // Move obstacles and collectibles closer to player
-      activeObstacles.forEach((obs) => {
-        obs.mesh.position.z -= frameDist;
-        obs.data.zPosition = obs.mesh.position.z;
-
-        // Proximity close-call / near-miss detection when obstacle passes player position (Z <= 0.3)
+        // Near-miss proximity detection
         if (!obs.data.proximityChecked && obs.mesh.position.z <= 0.3) {
           obs.data.proximityChecked = true;
-
           if (!obs.data.hasBeenPassed) {
-            const laneDiff = Math.abs(obs.data.lane - playerStats.currentLane);
-            if (laneDiff <= 1) {
-              const logId = Math.random().toString(36).substring(2, 9);
-              const isSameLane = laneDiff === 0;
-              const points = isSameLane ? 250 : 75; // 250 for perfect dodge, 75 for side-graze
-              
-              let dodgeType: 'GRAZE' | 'PERFECT_DODGE' | 'ELEVATION_EVASION' | 'SLIDE_EVASION' = 'GRAZE';
-              if (isSameLane) {
-                if (obs.data.type === ObstacleType.WALL || obs.data.type === ObstacleType.DRONE) {
-                  dodgeType = 'SLIDE_EVASION';
-                } else if (obs.data.type === ObstacleType.LOW_BARRIER || obs.data.type === ObstacleType.SPIKE_ROCK) {
-                  dodgeType = 'ELEVATION_EVASION';
-                } else {
-                  dodgeType = 'PERFECT_DODGE';
-                }
-              }
-
-              const newLog = {
-                id: logId,
-                type: dodgeType,
-                points,
-                obstacleType: obs.data.type,
-                distance: isSameLane ? 0.3 : 1.8,
-                timestamp: Date.now()
-              };
-
-              playerStats.proximityLogs = [newLog, ...(playerStats.proximityLogs || [])].slice(0, 5);
-              playerStats.bonusScore = (playerStats.bonusScore || 0) + points;
-
-              triggerVibration(55);
-              
-              // Simple sound cue for positive gameplay loop!
-              try {
-                // Play a brief high-pitched blip to satisfy the ear
-                const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-                if (AudioCtx && !isMutedRef.current) {
-                  const ctx = new AudioCtx();
-                  const osc = ctx.createOscillator();
-                  const gain = ctx.createGain();
-                  osc.type = 'sine';
-                  osc.frequency.setValueAtTime(1200, ctx.currentTime);
-                  osc.frequency.linearRampToValueAtTime(1600, ctx.currentTime + 0.08);
-                  gain.gain.setValueAtTime(0.04, ctx.currentTime);
-                  gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.08);
-                  osc.connect(gain);
-                  gain.connect(ctx.destination);
-                  osc.start();
-                  osc.stop(ctx.currentTime + 0.08);
-                }
-              } catch (e) {
-                // AudioContext fallback safety
-              }
+            const diff = Math.abs(obs.data.lane - ps.currentLane);
+            if (diff <= 1) {
+              const pts = diff === 0 ? 250 : 75;
+              ps.proximityLogs = [
+                { id: Math.random().toString(36).slice(2), type: diff === 0 ? 'PERFECT_DODGE' : 'GRAZE',
+                  points: pts, obstacleType: obs.data.type, distance: diff === 0 ? 0.3 : 1.8, timestamp: Date.now() },
+                ...(ps.proximityLogs ?? []),
+              ].slice(0, 5);
+              ps.bonusScore = (ps.bonusScore ?? 0) + pts;
             }
           }
         }
 
-        // Apply Enemy Scan wireframe overlay dynamically
-        if (scanActive) {
-          if (obs.mesh.material !== scanMaterial) {
-            if (!(obs.mesh as any).originalMaterial) {
-              (obs.mesh as any).originalMaterial = obs.mesh.material;
-            }
-            obs.mesh.material = scanMaterial;
-          }
-        } else {
-          if ((obs.mesh as any).originalMaterial && obs.mesh.material === scanMaterial) {
-            obs.mesh.material = (obs.mesh as any).originalMaterial;
-          }
+        // Scan wireframe overlay
+        if (scanActive && !(obs.mesh as any).origMat) {
+          (obs.mesh as any).origMat = obs.mesh.material;
+          obs.mesh.material = scanMat;
+        } else if (!scanActive && (obs.mesh as any).origMat && obs.mesh.material === scanMat) {
+          obs.mesh.material = (obs.mesh as any).origMat;
         }
       });
 
-      activeCollectibles.forEach((col) => {
-        col.mesh.position.z -= frameDist;
-        col.data.zPosition = col.mesh.position.z;
+      // ── MOVE COLLECTIBLES ────────────────────────────────────────────────────
+      activeCollectibles.forEach(col => {
+        col.mesh.position.z -= fd;
+        col.mesh.rotation.y += dt * 3;
+        col.data.zPosition   = col.mesh.position.z;
       });
 
-      // Spawn new far elements procedurally as we run
-      // Exponential spawn frequency scaling: frequency of obstacles increases exponentially with distance
-      const baseSpawnChance = 1.3;
-      const spawnFactor = Math.min(4.5, baseSpawnChance * Math.exp(distanceFactor * 0.18));
-      const spawnChance = dt * spawnFactor;
-      if (Math.random() < spawnChance) {
-        // Spawn distance is proportional to current speed so obstacles spawn ahead relative to runner's reaction time
-        const farZ = 100.0 + playerStats.speed * 2.2;
-        if (Math.random() > 0.35) spawnObstacle(farZ);
-        if (Math.random() > 0.3) spawnCollectible(farZ + 12);
-      }
-
-      // Cleanup elements passed behind player (Z < -5)
-      for (let i = activeObstacles.length - 1; i >= 0; i--) {
-        const obs = activeObstacles[i];
-        if (obs.mesh.position.z < -5.0) {
-          obs.mesh.dispose();
-          activeObstacles.splice(i, 1);
-        }
-      }
-
-      for (let i = activeCollectibles.length - 1; i >= 0; i--) {
-        const col = activeCollectibles[i];
-        if (col.mesh.position.z < -5.0) {
-          col.mesh.dispose();
-          activeCollectibles.splice(i, 1);
-        }
-      }
-
-      // 10. Direct Collision Detections (AABB box check overlap)
-      const playerRadius = 0.42;
-      const playerZ = 0.0;
-
-      activeObstacles.forEach((obs) => {
+      // ── COLLISION: OBSTACLES ────────────────────────────────────────────────
+      activeObstacles.forEach(obs => {
         if (obs.data.hasBeenPassed) return;
+        if (obs.data.lane !== ps.currentLane) return;
+        if (Math.abs(obs.mesh.position.z) >= 0.65) return;
 
-        // Check lane matching and Z distance overlap
-        const isSameLane = obs.data.lane === playerStats.currentLane;
-        const zDist = Math.abs(obs.mesh.position.z - playerZ);
+        let hit = false;
+        if (obs.data.type === ObstacleType.WALL        && !ps.isSliding) hit = true;
+        if (obs.data.type === ObstacleType.DRONE       && !ps.isSliding) hit = true;
+        if (obs.data.type === ObstacleType.LOW_BARRIER && !ps.isJumping) hit = true;
+        if (obs.data.type === ObstacleType.SPIKE_ROCK  && !ps.isJumping) hit = true;
+        if (!hit) return;
 
-        if (isSameLane && zDist < 0.65) {
-          let hasCollision = false;
+        obs.data.hasBeenPassed = true;
 
-          if (obs.data.type === ObstacleType.WALL) {
-            // High wall: collides unless sliding
-            if (!playerStats.isSliding) hasCollision = true;
-          } else if (obs.data.type === ObstacleType.LOW_BARRIER) {
-            // Low barrier: collides unless jumping
-            if (!playerStats.isJumping) hasCollision = true;
-          } else if (obs.data.type === ObstacleType.SPIKE_ROCK) {
-            // Ground spikes: collides unless jumping
-            if (!playerStats.isJumping) hasCollision = true;
-          } else if (obs.data.type === ObstacleType.DRONE) {
-            // Floating drone: collides unless sliding
-            if (!playerStats.isSliding) hasCollision = true;
-          }
-
-          if (hasCollision) {
-            obs.data.hasBeenPassed = true;
-
-            if (isBurstActiveLocal) {
-              // Destroy obstacle satisfyingly
-              playSynthSFX('slam');
-              triggerVibration(60);
-              playerStats.obstaclesDestroyed = (playerStats.obstaclesDestroyed || 0) + 1;
-              playerStats.destroyCombo = (playerStats.destroyCombo || 0) + 1;
-              if (playerStats.destroyCombo > (playerStats.maxDestroyCombo || 0)) {
-                playerStats.maxDestroyCombo = playerStats.destroyCombo;
-              }
-              const comboMult = Math.min(10, 1 + Math.floor(playerStats.destroyCombo / 3));
-              const pts = 250 * comboMult;
-              playerStats.bonusScore = (playerStats.bonusScore || 0) + pts;
-              
-              // Shrink / hide mesh instantly
-              obs.mesh.scaling.set(0.01, 0.01, 0.01);
-              
-              // Spawn procedural physical shards that burst outwards with actual gravity & velocity
-              for (let j = 0; j < 12; j++) {
-                const shard = CreateBox('shard', { size: 0.15 }, scene);
-                shard.position.copyFrom(obs.mesh.position);
-                shard.material = obs.mesh.material;
-                const vel = new Vector3(
-                  (Math.random() - 0.5) * 8,
-                  Math.random() * 6 + 2.5,
-                  Math.random() * 8 + 5
-                );
-                
-                // Animate physical shards
-                const sObs = scene.onBeforeRenderObservable.add(() => {
-                  const frameDt = engine.getDeltaTime() / 1000;
-                  shard.position.addInPlace(vel.scale(frameDt));
-                  vel.y -= 9.81 * frameDt; // gravity drop
-                  shard.rotation.x += 0.15;
-                  shard.rotation.y += 0.15;
-                  if (shard.position.y < -0.5 || shard.position.z < -10) {
-                    shard.dispose();
-                    scene.onBeforeRenderObservable.remove(sObs);
-                  }
+        if (burstActiveLocal) {
+          playSFX('slam', isMutedRef.current); triggerVibration(60);
+          ps.destroyCombo++; if (ps.destroyCombo > ps.maxDestroyCombo!) ps.maxDestroyCombo = ps.destroyCombo;
+          ps.bonusScore = (ps.bonusScore ?? 0) + 250 * Math.min(10, 1 + Math.floor(ps.destroyCombo / 3));
+          obs.mesh.scaling.set(0.01, 0.01, 0.01);
+          spawnShards(obs.mesh.position, obs.mesh.material);
+        } else {
+          playSFX('damage', isMutedRef.current);
+          ps.destroyCombo = 0;
+          if (ps.shieldActive) {
+            ps.shieldRemaining = Math.max(0, (ps.shieldRemaining ?? 100) - 45);
+            if (ps.shieldRemaining <= 0) { ps.shieldActive = false; shield.isVisible = false; }
+          } else {
+            triggerVibration([150, 80, 150]);
+            ps.health = Math.max(0, ps.health - 25);
+            staggered = true;
+            let flashes = 0;
+            const fi = setInterval(() => {
+              if (gltfLoaded && characterRef.current) {
+                characterRef.current.getChildMeshes().forEach((m: any) => {
+                  m.visibility = flashes % 2 === 0 ? 0.35 : 1;
                 });
               }
-            } else {
-              // Normal damage behavior
-              playSynthSFX('damage');
-              playerStats.destroyCombo = 0;
-
-              if (playerStats.shieldActive) {
-                triggerVibration(100);
-                playerStats.shieldRemaining = Math.max(0, (playerStats.shieldRemaining || 100) - 45);
-                if (playerStats.shieldRemaining <= 0) {
-                  playerStats.shieldActive = false;
-                  hexForceField.isVisible = false;
+              flashes++;
+              if (flashes >= 6) {
+                clearInterval(fi); staggered = false;
+                if (gltfLoaded && characterRef.current) {
+                  characterRef.current.getChildMeshes().forEach((m: any) => { m.visibility = 1; });
                 }
-              } else {
-                triggerVibration([150, 80, 150]);
-                playerStats.health = Math.max(0, playerStats.health - 25);
-                isTemporarilyStaggered = true;
-                
-                // Simple flash visual feedback
-                let duration = 0;
-                const flash = setInterval(() => {
-                  if (!hasLoadedGltf && coreBody) {
-                    coreBody.material = (duration % 2 === 0) ? chestEmissiveMat : metalBodyMat;
-                  }
-                  duration++;
-                  if (duration >= 6) {
-                    clearInterval(flash);
-                    if (!hasLoadedGltf && coreBody) {
-                      coreBody.material = metalBodyMat;
-                    }
-                    isTemporarilyStaggered = false;
-                  }
-                }, 80);
               }
-
-              if (playerStats.health <= 0) {
-                onGameOver();
-              }
-            }
+            }, 80);
           }
+          if (ps.health <= 0) onGameOver();
         }
       });
 
-      // Collectibles overlap checking
-      activeCollectibles.forEach((col) => {
+      // ── COLLISION: COLLECTIBLES ─────────────────────────────────────────────
+      activeCollectibles.forEach(col => {
         if (col.data.hasBeenCollected) return;
+        if (col.data.lane !== ps.currentLane) return;
+        if (Math.abs(col.mesh.position.z) >= 0.8) return;
+        col.data.hasBeenCollected = true;
+        col.mesh.dispose();
+        playSFX('collect', isMutedRef.current);
 
-        const isSameLane = col.data.lane === playerStats.currentLane;
-        const zDist = Math.abs(col.mesh.position.z - playerZ);
-
-        if (isSameLane && zDist < 0.8) {
-          col.data.hasBeenCollected = true;
-          col.mesh.dispose();
-          playSynthSFX('collect');
-
-          if (col.data.type === 'COIN') {
-            playerStats.coins += 1;
-            playerStats.score += 50;
-          } else if (col.data.type === 'ENERGY_CELL') {
-            // Fill energy
-            playerStats.energy = Math.min(playerStats.maxEnergy, playerStats.energy + 30);
-          } else if (col.data.type === 'SHIELD_POWERUP') {
-            playerStats.shieldActive = true;
-            playerStats.shieldRemaining = 100;
-            hexForceField.isVisible = true;
-            if (hexForceField.material) {
-              (hexForceField.material as StandardMaterial).alpha = 0.22;
-            }
-            playSynthSFX('speed_boost');
-            playerStats.bonusScore = (playerStats.bonusScore || 0) + 150;
-          } else if (col.data.type === 'VELOCITY_BURST') {
-            isBurstActiveLocal = true;
-            burstTimer = burstDuration;
-            setIsBurstActive(true);
-            triggerVibration([80, 50, 80]);
-            playSynthSFX('speed_boost');
-            playerStats.multiplier = Math.min(10, playerStats.multiplier + 1);
-          } else if (col.data.type === 'POWERUP_PLASMA_BLADE') {
-            playerStats.activeWeapon = WeaponType.PLASMA_BLADE;
-            playerStats.weaponCharges = Math.min(10, (playerStats.weaponCharges || 0) + 5);
-            updateWeaponMesh(WeaponType.PLASMA_BLADE);
-            playSynthSFX('collect');
-            playerStats.bonusScore = (playerStats.bonusScore || 0) + 100;
-          } else if (col.data.type === 'POWERUP_ION_BLASTER') {
-            playerStats.activeWeapon = WeaponType.BLASTER;
-            playerStats.weaponCharges = Math.min(10, (playerStats.weaponCharges || 0) + 5);
-            updateWeaponMesh(WeaponType.BLASTER);
-            playSynthSFX('collect');
-            playerStats.bonusScore = (playerStats.bonusScore || 0) + 100;
-          }
+        if (col.data.type === 'COIN') {
+          ps.coins++; ps.score += 50;
+        } else if (col.data.type === 'ENERGY_CELL') {
+          ps.energy = Math.min(ps.maxEnergy, ps.energy + 30);
+        } else if (col.data.type === 'SHIELD_POWERUP') {
+          ps.shieldActive = true; ps.shieldRemaining = 100;
+          shield.isVisible = true;
+          (shield.material as StandardMaterial).alpha = 0.22;
+          ps.bonusScore = (ps.bonusScore ?? 0) + 150;
+        } else if (col.data.type === 'VELOCITY_BURST') {
+          burstActiveLocal = true; burstTimer = BURST_DURATION;
+          setIsBurstActive(true);
+          playSFX('speed_boost', isMutedRef.current);
+          triggerVibration([80, 50, 80]);
+          ps.multiplier = Math.min(10, ps.multiplier + 1);
+        } else if (col.data.type === 'POWERUP_PLASMA_BLADE') {
+          ps.activeWeapon  = WeaponType.PLASMA_BLADE;
+          ps.weaponCharges = Math.min(10, (ps.weaponCharges ?? 0) + 5);
+          updateWeaponMesh(WeaponType.PLASMA_BLADE);
+          ps.bonusScore = (ps.bonusScore ?? 0) + 100;
+        } else if (col.data.type === 'POWERUP_ION_BLASTER') {
+          ps.activeWeapon  = WeaponType.BLASTER;
+          ps.weaponCharges = Math.min(10, (ps.weaponCharges ?? 0) + 5);
+          updateWeaponMesh(WeaponType.BLASTER);
+          ps.bonusScore = (ps.bonusScore ?? 0) + 100;
         }
       });
 
-      // Forward live stats update to React state
-      onStatsUpdate({ ...playerStats });
+      // ── CLEANUP ──────────────────────────────────────────────────────────────
+      for (let i = activeObstacles.length - 1;   i >= 0; i--) { if (activeObstacles[i].mesh.position.z   < -5) { activeObstacles[i].mesh.dispose();   activeObstacles.splice(i, 1);   } }
+      for (let i = activeCollectibles.length - 1; i >= 0; i--) { if (activeCollectibles[i].mesh.position.z < -5) { activeCollectibles[i].mesh.dispose(); activeCollectibles.splice(i, 1); } }
+
+      // ── PROCEDURAL SPAWN ─────────────────────────────────────────────────────
+      const spawnChance = dt * Math.min(4.5, 1.3 * Math.exp(df * 0.18));
+      if (Math.random() < spawnChance) {
+        const farZ = 100 + ps.speed * 2.2;
+        if (Math.random() > 0.35) spawnObstacle(farZ);
+        if (Math.random() > 0.3)  spawnCollectible(farZ + 12);
+      }
+
+      // ── SENTINEL ────────────────────────────────────────────────────────────
+      if (simAnomalyType) {
+        const map: Record<string, () => void> = {
+          speed:      () => { ps.speed = 180; },
+          'speed-warn': () => { ps.speed = 68; },
+          health:     () => { ps.health = 500; },
+          state:      () => { ps.isJumping = true; ps.isSliding = true; },
+          warp:       () => { ps.distance += 450; },
+          score:      () => { ps.score += 85000; },
+          'score-warn': () => { ps.score += 12000; },
+          'drift-warn': () => { ps.xPosition = 3.8; },
+        };
+        map[simAnomalyType]?.();
+        simAnomalyType = null;
+      }
+
+      const validation = SentinelRegistry.validate(ps, prevStats ? { ...prevStats } : null, dt);
+      ps.sentinelChecksPassedCount = SentinelRegistry.getChecksPassedCount();
+      ps.sentinelWarnings  = validation.warnings ?? [];
+      ps.sentinelLogs      = SentinelRegistry.getLogs();
+      ps.sentinelStatus    = !validation.isValid ? 'ANOMALY_DETECTED' : (ps.sentinelAnomalies ?? []).length > 0 ? 'ANOMALY_DETECTED' : 'SECURE';
+      if (!validation.isValid) {
+        ps.sentinelAnomalies = Array.from(new Set([...(ps.sentinelAnomalies ?? []), ...validation.anomalies]));
+      }
+
+      prevStats = { ...ps };
+      onStatsUpdate({ ...ps });
     });
 
-    engine.runRenderLoop(() => {
-      scene.render();
-    });
+    engine.runRenderLoop(() => scene.render());
 
-    const handleResize = () => {
-      engine.resize();
-    };
-    window.addEventListener('resize', handleResize);
+    const onResize = () => engine.resize();
+    window.addEventListener('resize', onResize);
 
+    // ── CLEANUP ───────────────────────────────────────────────────────────────
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('pointerdown', handlePointerDown);
-      window.removeEventListener('resize', handleResize);
-      window.removeEventListener('cyber-runner-trigger-scan', handleScanTrigger);
+      window.removeEventListener('keydown',   onKeyDown);
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('resize',    onResize);
+      window.removeEventListener('cyber-runner-trigger-scan',    onScanEvent);
+      window.removeEventListener('cyber-runner-trigger-anomaly', onAnomalyEvt);
       sceneRef.current = null;
       engine.dispose();
     };
   }, [gameState]);
 
+  // ── RENDER ──────────────────────────────────────────────────────────────────
   return (
     <div className="relative w-full h-full overflow-hidden">
-      {/* Self-contained CSS keyframe animation for horizontal warp streaks */}
       <style>{`
         @keyframes speedStreak {
-          0% {
-            transform: translateX(100vw);
-          }
-          100% {
-            transform: translateX(-150vw);
-          }
+          0%   { transform: translateX(100vw); }
+          100% { transform: translateX(-150vw); }
         }
-        .animate-speed-streak {
-          animation-name: speedStreak;
-        }
+        .speed-streak { animation-name: speedStreak; }
       `}</style>
 
-      {/* Real-time horizontal motion blur filter definition */}
       <svg className="absolute w-0 h-0 pointer-events-none" style={{ visibility: 'hidden' }}>
         <defs>
           <filter id="motion-blur-filter">
@@ -1849,57 +1239,43 @@ export default function GameCanvas({
         </defs>
       </svg>
 
-      {/* High-velocity horizontal speed warp lines */}
+      {/* Velocity burst overlay */}
       {isBurstActive && (
         <div className="absolute inset-0 pointer-events-none z-10 overflow-hidden opacity-85">
-          {/* Neon violet warp vignette */}
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_40%,rgba(217,70,239,0.18)_100%)] animate-pulse" />
-          
-          {/* Flowing speed streaks */}
           <div className="absolute inset-0">
-            {Array.from({ length: 28 }).map((_, i) => {
-              const top = Math.random() * 100;
-              const left = Math.random() * 80;
-              const width = 120 + Math.random() * 240;
-              const duration = 0.15 + Math.random() * 0.25;
-              const delay = Math.random() * 0.4;
-              const opacity = 0.3 + Math.random() * 0.5;
-              return (
-                <div
-                  key={i}
-                  className="absolute h-[1px] bg-gradient-to-r from-transparent via-fuchsia-400 to-transparent animate-speed-streak"
-                  style={{
-                    top: `${top}%`,
-                    left: `${left}%`,
-                    width: `${width}px`,
-                    opacity: opacity,
-                    animationDuration: `${duration}s`,
-                    animationDelay: `${delay}s`,
-                    animationIterationCount: 'infinite',
-                    animationTimingFunction: 'linear',
-                  }}
-                />
-              );
-            })}
+            {Array.from({ length: 28 }).map((_, i) => (
+              <div
+                key={i}
+                className="absolute h-[1px] bg-gradient-to-r from-transparent via-fuchsia-400 to-transparent speed-streak"
+                style={{
+                  top:                    `${Math.random() * 100}%`,
+                  left:                   `${Math.random() * 80}%`,
+                  width:                  `${120 + Math.random() * 240}px`,
+                  opacity:                0.3 + Math.random() * 0.5,
+                  animationDuration:      `${0.15 + Math.random() * 0.25}s`,
+                  animationDelay:         `${Math.random() * 0.4}s`,
+                  animationIterationCount:'infinite',
+                  animationTimingFunction:'linear',
+                }}
+              />
+            ))}
           </div>
         </div>
       )}
 
-      {/* Main 3D Babylon rendering Canvas */}
-      <canvas 
-        ref={canvasRef} 
-        className="w-full h-full block outline-none transition-all duration-150" 
+      <canvas
+        ref={canvasRef}
+        className="w-full h-full block outline-none"
         style={isBurstActive ? { filter: 'url(#motion-blur-filter)' } : undefined}
       />
 
-      {/* Development Debug Inspector Overlay Toggle Button */}
       <button
         onClick={toggleInspector}
         className="absolute top-4 right-4 z-20 px-3 py-1.5 bg-black/70 hover:bg-black/90 border border-[#F27D26]/40 hover:border-[#F27D26] rounded text-[10px] font-mono tracking-wider text-[#F27D26] uppercase select-none transition-all duration-150 flex items-center gap-1.5 cursor-pointer shadow-lg"
-        title="Toggle Babylon.js Inspector to debug glTF meshes & skeleton"
       >
-        <span className={`w-1.5 h-1.5 rounded-full ${inspectorVisible ? 'bg-green-500 animate-ping' : 'bg-[#F27D26]'}`} />
-        {inspectorVisible ? 'Close Inspector' : 'Debug Inspector'}
+        <span className={`w-1.5 h-1.5 rounded-full ${inspectorOpen ? 'bg-green-500 animate-ping' : 'bg-[#F27D26]'}`} />
+        {inspectorOpen ? 'CLOSE INSPECTOR' : 'DEBUG INSPECTOR'}
       </button>
     </div>
   );

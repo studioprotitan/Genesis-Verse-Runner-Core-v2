@@ -26,6 +26,7 @@ import {
   Settings, Layers, Radio, CheckCircle, Database, HelpCircle, 
   Sparkles, Eye, Volume2, VolumeX, Swords, Compass, Bookmark
 } from 'lucide-react';
+import AbyssumAudioController from './AbyssumAudioController';
 
 const modelGlbUrl = '/jump-sequence.glb';
 
@@ -993,7 +994,7 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
       </AnimatePresence>
 
       {/* LEFT: Cyber Control Panel */}
-      <div className="w-full md:w-96 bg-zinc-950 border-r border-zinc-850 flex flex-col z-10 overflow-y-auto">
+      <div className="w-full md:w-96 h-full bg-zinc-950 border-r border-zinc-850 flex flex-col z-10 overflow-hidden">
         {/* Terminal Header */}
         <div className="p-5 border-b border-zinc-850 bg-black/50 flex justify-between items-center">
           <div>
@@ -1086,6 +1087,11 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
             </div>
           </div>
         )}
+
+        {/* Abyssum Ambient Audio Sync Controller */}
+        <div className="mx-4 mt-4">
+          <AbyssumAudioController />
+        </div>
 
         {/* Customize Panel tabs */}
         <div className="px-5 pt-4 flex gap-2 border-b border-zinc-900 bg-zinc-950/25">
