@@ -39,7 +39,7 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
   const logContainerRef = useRef<HTMLDivElement | null>(null);
 
   // --- HMI HEAD NODE NEURAL SYNC STATES ---
-  const [gltfModelUrl, setGltfModelUrl] = useState('');
+  const [gltfModelUrl, setGltfModelUrl] = useState('/jog-fwd-variants.glb');
   const [isModelLoading, setIsModelLoading] = useState(false);
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
   const [modelLoadedSuccess, setModelLoadedSuccess] = useState(false);
@@ -406,13 +406,28 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
         const loadedRoot = result.meshes[0];
         hmiNodesRef.current.gltfHeadMesh = loadedRoot;
 
-        // Position & Scale the loaded GLTF model elegantly to fit HMI focus
-        loadedRoot.position = Vector3.Zero();
-        loadedRoot.scaling = new Vector3(1.2, 1.2, 1.2);
-
         // Turn off procedural head components visibility if a gltf is loaded
         if (hmiNodesRef.current.headRoot) {
           hmiNodesRef.current.headRoot.setEnabled(false);
+        }
+
+        const headMesh = scene.getMeshByName("Belica_primitive3");
+        if (headMesh) {
+          // Hide all other meshes to isolate the head
+          result.meshes.forEach((m: any) => {
+            if (m !== headMesh && m !== loadedRoot) {
+              m.setEnabled(false);
+            }
+          });
+          headMesh.setEnabled(true);
+
+          // Position & Scale the loaded GLTF model elegantly to center the head in HMI focus
+          loadedRoot.position = new Vector3(0, -9.5, 0);
+          loadedRoot.scaling = new Vector3(6.5, 6.5, 6.5);
+        } else {
+          // Position & Scale the loaded GLTF model elegantly to fit HMI focus
+          loadedRoot.position = Vector3.Zero();
+          loadedRoot.scaling = new Vector3(1.2, 1.2, 1.2);
         }
 
         // Search for Morph Targets on loaded mesh
@@ -437,6 +452,19 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
         }
       });
   };
+
+  // Auto-load default model on HMI Head Node mount
+  useEffect(() => {
+    let timer: any = null;
+    if (activeTab === 'HMI_HEAD' && hmiSceneRef.current && gltfModelUrl && !modelLoadedSuccess && !isModelLoading) {
+      timer = setTimeout(() => {
+        handleLoadCustomGltf();
+      }, 100);
+    }
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeTab, isBooted, gltfModelUrl, modelLoadedSuccess]);
 
   const handleStartConnection = () => {
     if (isConnecting) return;
