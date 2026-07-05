@@ -133,10 +133,22 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
+  const [testKeyPressed, setTestKeyPressed] = useState<string | null>(null);
+  const [testActionName, setTestActionName] = useState<string | null>(null);
+
   const animationModeRef = useRef<'IDLE' | 'JOGGING'>('IDLE');
   const loadedAnimsRef = useRef<{
     idleAnim?: any;
     jogAnim?: any;
+    jumpStartAnim?: any;
+    jumpApexAnim?: any;
+    jumpPrelandAnim?: any;
+    jumpRecoveryAnim?: any;
+    slidingAnim?: any;
+    staggerAnim?: any;
+    deadAnim?: any;
+    jogLeftAnim?: any;
+    jogRightAnim?: any;
     allGroups?: any[];
   }>({});
 
@@ -464,18 +476,42 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
         const animGroups = result.animationGroups;
         animGroups.forEach(g => g.stop());
 
-        const idle = animGroups.find(g => {
-          const n = g.name.toLowerCase();
-          return n.includes('idle') || n.includes('cst-ert-idle-a');
-        });
-        const jog = animGroups.find(g => {
-          const n = g.name.toLowerCase();
-          return n.includes('walk') || n.includes('run') || n.includes('jog') || n.includes('cst-ert-jog-fwd-a');
-        });
+        const JOG_ANIM = "cst-ert-jog-fwd-a";
+        const IDLE_ANIM = "cst-ert-idle-a";
+        const JUMP_START = "cst-ert-jump-start-a";
+        const JUMP_APEX = "cst-ert-jump-apex-a";
+        const JUMP_PRELAND = "cst-ert-jump-preland-a";
+        const JUMP_RECOVERY = "cst-ert-jump-recovery-a";
+        const SLIDING_ANIM = "cst-ert-jog-fwd-downhill-a";
+        const STAGGER_ANIM = "cst-ert-jog-fwd-pivot-180-a";
+        const DEAD_ANIM = "cst-ert-jog-fwd-stop-a";
+        const JOG_LEFT_ANIM = "cst-ert-jog-fwd-circle-left-a";
+        const JOG_RIGHT_ANIM = "cst-ert-jog-fwd-circle-right-a";
+
+        const idle = animGroups.find(g => g.name === IDLE_ANIM);
+        const jog = animGroups.find(g => g.name === JOG_ANIM);
+        const jumpStart = animGroups.find(g => g.name === JUMP_START);
+        const jumpApex = animGroups.find(g => g.name === JUMP_APEX);
+        const jumpPreland = animGroups.find(g => g.name === JUMP_PRELAND);
+        const jumpRecovery = animGroups.find(g => g.name === JUMP_RECOVERY);
+        const sliding = animGroups.find(g => g.name === SLIDING_ANIM);
+        const stagger = animGroups.find(g => g.name === STAGGER_ANIM);
+        const dead = animGroups.find(g => g.name === DEAD_ANIM);
+        const jogLeft = animGroups.find(g => g.name === JOG_LEFT_ANIM);
+        const jogRight = animGroups.find(g => g.name === JOG_RIGHT_ANIM);
 
         loadedAnimsRef.current = {
           idleAnim: idle || animGroups[0],
           jogAnim: jog || animGroups[1] || animGroups[0],
+          jumpStartAnim: jumpStart,
+          jumpApexAnim: jumpApex,
+          jumpPrelandAnim: jumpPreland,
+          jumpRecoveryAnim: jumpRecovery,
+          slidingAnim: sliding,
+          staggerAnim: stagger,
+          deadAnim: dead,
+          jogLeftAnim: jogLeft,
+          jogRightAnim: jogRight,
           allGroups: animGroups
         };
 
@@ -953,6 +989,114 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
   useEffect(() => {
     playCurrentAnimation();
   }, [animationMode]);
+
+  const resumeDefaultAnimation = () => {
+    setTestKeyPressed(null);
+    setTestActionName(null);
+    if (!loadedAnimsRef.current.allGroups) return;
+    
+    // Stop all groups
+    loadedAnimsRef.current.allGroups.forEach(g => {
+      g.stop();
+      g.weight = 0;
+    });
+
+    // Play default
+    const mode = animationModeRef.current;
+    if (mode === 'IDLE' && loadedAnimsRef.current.idleAnim) {
+      loadedAnimsRef.current.idleAnim.weight = 1.0;
+      loadedAnimsRef.current.idleAnim.play(true);
+    } else if (mode === 'JOGGING' && loadedAnimsRef.current.jogAnim) {
+      loadedAnimsRef.current.jogAnim.weight = 1.0;
+      loadedAnimsRef.current.jogAnim.play(true);
+    }
+  };
+
+  const playTestAnimation = (anim: any, actionName: string, loop: boolean = false) => {
+    if (!anim || !loadedAnimsRef.current.allGroups) return;
+    
+    // Stop other groups
+    loadedAnimsRef.current.allGroups.forEach(g => {
+      if (g !== anim) {
+        g.stop();
+        g.weight = 0;
+      }
+    });
+
+    anim.weight = 1.0;
+    anim.play(loop);
+    setTestActionName(actionName);
+
+    // If it's a one-shot, restore default on end
+    if (!loop) {
+      const onEnd = () => {
+        if (animationModeRef.current === 'JOGGING') {
+          resumeDefaultAnimation();
+        }
+      };
+      if (anim.onAnimationEndObservable) {
+        anim.onAnimationEndObservable.addOnce(onEnd);
+      } else if (anim.onAnimationGroupEndObservable) {
+        anim.onAnimationGroupEndObservable.addOnce(onEnd);
+      }
+    }
+  };
+
+  // Listen to keyboard testing when in JOGGING mode
+  useEffect(() => {
+    if (animationMode !== 'JOGGING' || isLoading) {
+      setTestKeyPressed(null);
+      setTestActionName(null);
+      return;
+    }
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      if (e.repeat) return; // avoid repeats
+
+      if (k === 'w' || k === 'arrowup' || k === ' ') {
+        setTestKeyPressed(e.key === ' ' ? 'SPACE' : e.key.toUpperCase());
+        playTestAnimation(loadedAnimsRef.current.jumpStartAnim || loadedAnimsRef.current.jogAnim, 'cst-ert-jump-start-a', false);
+        if (k === ' ') e.preventDefault();
+      } else if (k === 's' || k === 'arrowdown') {
+        setTestKeyPressed(e.key.toUpperCase());
+        playTestAnimation(loadedAnimsRef.current.slidingAnim || loadedAnimsRef.current.jogAnim, 'cst-ert-jog-fwd-downhill-a', true);
+        if (k === 'arrowdown') e.preventDefault();
+      } else if (k === 'a' || k === 'arrowleft') {
+        setTestKeyPressed(e.key.toUpperCase());
+        playTestAnimation(loadedAnimsRef.current.jogLeftAnim || loadedAnimsRef.current.jogAnim, 'cst-ert-jog-fwd-circle-left-a', true);
+      } else if (k === 'd' || k === 'arrowright') {
+        setTestKeyPressed(e.key.toUpperCase());
+        playTestAnimation(loadedAnimsRef.current.jogRightAnim || loadedAnimsRef.current.jogAnim, 'cst-ert-jog-fwd-circle-right-a', true);
+      } else if (k === 'q' || k === 'r') {
+        setTestKeyPressed(e.key.toUpperCase());
+        playTestAnimation(loadedAnimsRef.current.staggerAnim || loadedAnimsRef.current.jogAnim, 'cst-ert-jog-fwd-pivot-180-a', false);
+      } else if (k === 'f' || k === 'e') {
+        setTestKeyPressed(e.key.toUpperCase());
+        playTestAnimation(loadedAnimsRef.current.staggerAnim || loadedAnimsRef.current.jogAnim, 'cst-ert-jog-fwd-pivot-180-a', false);
+      } else if (k === 'x' || k === 'escape') {
+        setTestKeyPressed(e.key.toUpperCase());
+        playTestAnimation(loadedAnimsRef.current.deadAnim || loadedAnimsRef.current.jogAnim, 'cst-ert-jog-fwd-stop-a', false);
+      }
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      const currentKey = e.key === ' ' ? 'SPACE' : e.key.toUpperCase();
+      
+      if (testKeyPressed === currentKey || ['w', 'arrowup', ' ', 's', 'arrowdown', 'a', 'arrowleft', 'd', 'arrowright'].includes(k)) {
+        resumeDefaultAnimation();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [animationMode, testKeyPressed, isLoading]);
 
   return (
     <div className="relative w-full h-screen bg-[#030712] text-zinc-100 flex flex-col md:flex-row overflow-hidden">
@@ -1592,6 +1736,96 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
         
         {/* Babylon 3D Canvas */}
         <canvas ref={canvasRef} className="w-full h-full outline-none z-0" />
+
+        {/* Neural Input Tester Overlay */}
+        {animationMode === 'JOGGING' && (
+          <div className="absolute top-5 left-5 z-20 pointer-events-none font-mono flex flex-col gap-2 max-w-xs md:max-w-md bg-black/85 border border-zinc-800/80 p-4 rounded-lg backdrop-blur-md shadow-2xl">
+            <div className="flex items-center gap-2 border-b border-zinc-800/80 pb-2 mb-1">
+              <Cpu size={14} className="text-[#F27D26] animate-pulse" />
+              <span className="text-xs font-bold text-white uppercase tracking-wider">NEURAL INPUT REGISTER</span>
+            </div>
+            
+            <div className="text-[10px] text-zinc-400 leading-relaxed mb-2">
+              Press movement and action keybinds to stream telemetry and test skeletal animation clips.
+            </div>
+
+            {/* Simulated Live Diagnostic Metrics */}
+            <div className="grid grid-cols-2 gap-2 text-[9px] mb-3 bg-zinc-950 p-2.5 rounded border border-zinc-900">
+              <div>
+                <span className="text-zinc-500">INPUT DEVICE:</span>
+                <span className="text-emerald-400 block font-bold">KEYBOARD/MOUSE</span>
+              </div>
+              <div>
+                <span className="text-zinc-500">RESPONSE LATENCY:</span>
+                <span className="text-cyan-400 block font-bold">1.2ms (STABLE)</span>
+              </div>
+              <div>
+                <span className="text-zinc-500">ACTIVE CLIP:</span>
+                <span className="text-[#F27D26] block font-extrabold truncate">{testActionName || 'cst-ert-jog-fwd-a (LOOP)'}</span>
+              </div>
+              <div>
+                <span className="text-zinc-500">KEY REGISTERED:</span>
+                <span className="text-white block font-black">{testKeyPressed || 'NONE (IDLE)'}</span>
+              </div>
+            </div>
+
+            {/* Interactive Visual Controller Buttons Map */}
+            <div className="flex flex-col gap-1 text-[9px] text-zinc-400">
+              <span className="text-[8px] text-zinc-500 font-bold uppercase tracking-wider mb-1">Controller Keymap Diagnostic</span>
+              
+              <div className="flex gap-3 items-center justify-center py-1">
+                {/* Visual D-Pad/WASD representation */}
+                <div className="grid grid-cols-3 gap-1 w-24">
+                  <div />
+                  <div className={`h-7 rounded border font-bold flex items-center justify-center transition-all duration-75 ${
+                    ['W', 'ARROWUP'].includes(testKeyPressed || '') 
+                      ? 'bg-[#F27D26] text-black border-[#F27D26] scale-95 shadow-[0_0_10px_rgba(242,125,38,0.5)]' 
+                      : 'bg-zinc-900 text-zinc-500 border-zinc-800'
+                  }`} title="Jump action">W</div>
+                  <div />
+                  <div className={`h-7 rounded border font-bold flex items-center justify-center transition-all duration-75 ${
+                    ['A', 'ARROWLEFT'].includes(testKeyPressed || '') 
+                      ? 'bg-[#F27D26] text-black border-[#F27D26] scale-95 shadow-[0_0_10px_rgba(242,125,38,0.5)]' 
+                      : 'bg-zinc-900 text-zinc-500 border-zinc-800'
+                  }`} title="Lane Left action">A</div>
+                  <div className={`h-7 rounded border font-bold flex items-center justify-center transition-all duration-75 ${
+                    ['S', 'ARROWDOWN'].includes(testKeyPressed || '') 
+                      ? 'bg-[#F27D26] text-black border-[#F27D26] scale-95 shadow-[0_0_10px_rgba(242,125,38,0.5)]' 
+                      : 'bg-zinc-900 text-zinc-500 border-zinc-800'
+                  }`} title="Slide action">S</div>
+                  <div className={`h-7 rounded border font-bold flex items-center justify-center transition-all duration-75 ${
+                    ['D', 'ARROWRIGHT'].includes(testKeyPressed || '') 
+                      ? 'bg-[#F27D26] text-black border-[#F27D26] scale-95 shadow-[0_0_10px_rgba(242,125,38,0.5)]' 
+                      : 'bg-zinc-900 text-zinc-500 border-zinc-800'
+                  }`} title="Lane Right action">D</div>
+                </div>
+
+                <div className="flex flex-col gap-1 flex-1">
+                  {/* Space bar */}
+                  <div className={`h-6 rounded border font-mono font-bold flex items-center justify-center transition-all duration-75 ${
+                    testKeyPressed === 'SPACE' 
+                      ? 'bg-[#F27D26] text-black border-[#F27D26] scale-95 shadow-[0_0_10px_rgba(242,125,38,0.5)]' 
+                      : 'bg-zinc-900 text-zinc-500 border-zinc-800'
+                  }`} title="Jump spacebar">SPACEBAR (JUMP)</div>
+                  
+                  {/* Action key combinations */}
+                  <div className="grid grid-cols-2 gap-1">
+                    <div className={`h-5 rounded border font-bold flex items-center justify-center transition-all duration-75 ${
+                      ['Q', 'R'].includes(testKeyPressed || '') 
+                        ? 'bg-[#F27D26] text-black border-[#F27D26] scale-95 shadow-[0_0_10px_rgba(242,125,38,0.5)]' 
+                        : 'bg-zinc-900 text-zinc-500 border-zinc-800'
+                    }`} title="Pivot/Stagger scan key">Q / R</div>
+                    <div className={`h-5 rounded border font-bold flex items-center justify-center transition-all duration-75 ${
+                      ['F', 'E'].includes(testKeyPressed || '') 
+                        ? 'bg-[#F27D26] text-black border-[#F27D26] scale-95 shadow-[0_0_10px_rgba(242,125,38,0.5)]' 
+                        : 'bg-zinc-900 text-zinc-500 border-zinc-800'
+                    }`} title="Weapon key">F / E</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* 3D Action HUD / Mode Control Buttons */}
         <div className="absolute bottom-5 left-5 right-5 z-20 flex flex-col md:flex-row gap-3 justify-between items-center pointer-events-auto">

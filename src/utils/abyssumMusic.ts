@@ -41,7 +41,7 @@ export const ABYSSUM_TRACKS: TrackInfo[] = [
   }
 ];
 
-class AbyssumMusicManager {
+class SingleTrackBGMPlayer {
   private ctx: AudioContext | null = null;
   private isPlaying = false;
   private currentTrackIndex = 0;
@@ -712,6 +712,181 @@ class AbyssumMusicManager {
       const now = this.ctx ? this.ctx.currentTime : Date.now() / 1000;
       this.activeOscillators = this.activeOscillators.filter(v => v.stopTime > now);
     }
+  }
+}
+
+class AbyssumMusicManager {
+  private loungePlayer: SingleTrackBGMPlayer;
+  private actionPlayer: SingleTrackBGMPlayer;
+  private activePlayerType: 'lounge' | 'action' = 'lounge';
+  private masterVolume = 0.4;
+  private isMuted = false;
+  private stateChangeCallbacks: (() => void)[] = [];
+  private crossfadeInterval: any = null;
+
+  constructor() {
+    this.loungePlayer = new SingleTrackBGMPlayer();
+    // Default the lounge player to the exploration track (Solar Horizon: index 1)
+    this.loungePlayer.setTrack(1);
+
+    this.actionPlayer = new SingleTrackBGMPlayer();
+    // Default the action player to the action track (Neon Overdrive: index 0)
+    this.actionPlayer.setTrack(0);
+
+    // Subscribe to both so that we can forward any state changes to our subscribers
+    this.loungePlayer.subscribe(() => this.emitChange());
+    this.actionPlayer.subscribe(() => this.emitChange());
+  }
+
+  private emitChange() {
+    this.stateChangeCallbacks.forEach(cb => cb());
+  }
+
+  public subscribe(callback: () => void) {
+    this.stateChangeCallbacks.push(callback);
+    return () => {
+      this.stateChangeCallbacks = this.stateChangeCallbacks.filter(c => c !== callback);
+    };
+  }
+
+  public getActivePlayer() {
+    return this.activePlayerType === 'lounge' ? this.loungePlayer : this.actionPlayer;
+  }
+
+  public getInactivePlayer() {
+    return this.activePlayerType === 'lounge' ? this.actionPlayer : this.loungePlayer;
+  }
+
+  public togglePlay() {
+    const active = this.getActivePlayer();
+    active.togglePlay();
+    this.emitChange();
+  }
+
+  public play() {
+    const active = this.getActivePlayer();
+    active.play();
+    this.emitChange();
+  }
+
+  public pause() {
+    this.loungePlayer.pause();
+    this.actionPlayer.pause();
+    this.emitChange();
+  }
+
+  public setTrack(index: number) {
+    // If setting a track manually from the UI controller, apply it to the active player!
+    const active = this.getActivePlayer();
+    active.setTrack(index);
+    this.emitChange();
+  }
+
+  public nextTrack() {
+    const active = this.getActivePlayer();
+    active.nextTrack();
+    this.emitChange();
+  }
+
+  public prevTrack() {
+    const active = this.getActivePlayer();
+    active.prevTrack();
+    this.emitChange();
+  }
+
+  public setVolume(vol: number) {
+    this.masterVolume = vol;
+    // Apply volume proportionally to the active/inactive player, keeping crossfade ratios if a crossfade is active.
+    if (this.crossfadeInterval) {
+      // If crossfading, just set the masterVolume; the crossfader will handle the relative levels
+    } else {
+      this.getActivePlayer().setVolume(vol);
+      this.getInactivePlayer().setVolume(0);
+    }
+    this.emitChange();
+  }
+
+  public toggleMute() {
+    this.isMuted = !this.isMuted;
+    this.loungePlayer.toggleMute();
+    this.actionPlayer.toggleMute();
+    this.emitChange();
+  }
+
+  public getIsPlaying() {
+    return this.loungePlayer.getIsPlaying() || this.actionPlayer.getIsPlaying();
+  }
+
+  public getCurrentTrackIndex() {
+    return this.getActivePlayer().getCurrentTrackIndex();
+  }
+
+  public getVolume() {
+    return this.masterVolume;
+  }
+
+  public getIsMuted() {
+    return this.isMuted;
+  }
+
+  public getAnalyserData(): number[] {
+    return this.getActivePlayer().getAnalyserData();
+  }
+
+  // Actual dynamic crossfade function!
+  public crossfadeTo(target: 'lounge' | 'action', durationSeconds: number = 2.0) {
+    if (this.activePlayerType === target) return;
+
+    if (this.crossfadeInterval) {
+      clearInterval(this.crossfadeInterval);
+      this.crossfadeInterval = null;
+    }
+
+    const prevPlayer = this.getActivePlayer();
+    this.activePlayerType = target;
+    const nextPlayer = this.getActivePlayer();
+
+    // Start the next player if it's not playing
+    if (!nextPlayer.getIsPlaying()) {
+      nextPlayer.play();
+    }
+
+    // We will step the volumes over durationSeconds
+    const steps = 20;
+    const stepInterval = (durationSeconds * 1000) / steps;
+    let currentStep = 0;
+
+    // Start values
+    const startNextVol = 0;
+    const endNextVol = this.masterVolume;
+    const startPrevVol = prevPlayer.getVolume() > 0 ? prevPlayer.getVolume() : this.masterVolume;
+    const endPrevVol = 0;
+
+    // Apply initial volumes
+    nextPlayer.setVolume(startNextVol);
+
+    this.crossfadeInterval = setInterval(() => {
+      currentStep++;
+      const ratio = currentStep / steps;
+
+      // Linear interpolation for simplicity and clean fade
+      const nextVol = startNextVol + (endNextVol - startNextVol) * ratio;
+      const prevVol = startPrevVol + (endPrevVol - startPrevVol) * (1 - ratio);
+
+      nextPlayer.setVolume(nextVol);
+      prevPlayer.setVolume(prevVol);
+
+      this.emitChange();
+
+      if (currentStep >= steps) {
+        clearInterval(this.crossfadeInterval);
+        this.crossfadeInterval = null;
+        prevPlayer.pause();
+        prevPlayer.setVolume(0);
+        nextPlayer.setVolume(this.masterVolume);
+        this.emitChange();
+      }
+    }, stepInterval);
   }
 }
 

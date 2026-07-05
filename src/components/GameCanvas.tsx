@@ -39,6 +39,7 @@ import {
   ProximityLog,
 } from '../types';
 import { SentinelRegistry } from '../utils/sentinel';
+import { AbyssumBGM } from '../utils/abyssumMusic';
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -289,6 +290,9 @@ export default function GameCanvas({
   // ── MAIN EFFECT ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!canvasRef.current || gameState !== GameState.PLAYING) return;
+
+    // Trigger dynamic crossfade to high-tempo action track
+    AbyssumBGM.crossfadeTo('action', 1.5);
 
     // ── ENGINE SETUP ──────────────────────────────────────────────────────────
     const quality   = localStorage.getItem('cyber_runner_graphics_quality') ?? 'balanced';
@@ -591,18 +595,31 @@ export default function GameCanvas({
         const groups = result.animationGroups as any[];
         groups.forEach((g: any) => { g.stop(); g.weight = 0; });
 
-        anims.idle         = findAnim(groups, ['cst-ert-idle-a']) || findAnim(groups, ['idle', 'hero']);
-        anims.running      = findAnim(groups, ['cst-ert-jog-fwd-a']) || findAnim(groups, ['jog', 'walk', 'run']);
-        anims.jumpStart    = findAnim(groups, ['cst-ert-jump-start-a']) || findAnim(groups, ['jump-start', 'jump']);
-        anims.jumpApex     = findAnim(groups, ['cst-ert-jump-apex-a']) || findAnim(groups, ['jump-apex', 'jump']);
-        anims.jumpPreland  = findAnim(groups, ['cst-ert-jump-preland-a']) || findAnim(groups, ['jump-preland', 'jump']);
-        anims.jumpRecovery = findAnim(groups, ['cst-ert-jump-recovery-a']) || findAnim(groups, ['jump-recovery', 'jump']);
-        anims.sliding      = findAnim(groups, ['cst-ert-jog-fwd-downhill-a']) || findAnim(groups, ['slide', 'crouch']);
-        anims.stagger      = findAnim(groups, ['cst-ert-jog-fwd-pivot-180-a']) || findAnim(groups, ['stagger', 'damage', 'hit']);
-        anims.dead         = findAnim(groups, ['cst-ert-jog-fwd-stop-a']) || findAnim(groups, ['dead', 'crash']);
-        anims.jogLeft      = findAnim(groups, ['cst-ert-jog-fwd-circle-left-a']);
-        anims.jogRight     = findAnim(groups, ['cst-ert-jog-fwd-circle-right-a']);
-        anims.jumping      = anims.jumpStart || findAnim(groups, ['jump']);
+        const JOG_ANIM = "cst-ert-jog-fwd-a";
+        const IDLE_ANIM = "cst-ert-idle-a";
+        const JUMP_START = "cst-ert-jump-start-a";
+        const JUMP_APEX = "cst-ert-jump-apex-a";
+        const JUMP_PRELAND = "cst-ert-jump-preland-a";
+        const JUMP_RECOVERY = "cst-ert-jump-recovery-a";
+
+        const SLIDING_ANIM = "cst-ert-jog-fwd-downhill-a";
+        const STAGGER_ANIM = "cst-ert-jog-fwd-pivot-180-a";
+        const DEAD_ANIM = "cst-ert-jog-fwd-stop-a";
+        const JOG_LEFT_ANIM = "cst-ert-jog-fwd-circle-left-a";
+        const JOG_RIGHT_ANIM = "cst-ert-jog-fwd-circle-right-a";
+
+        anims.idle         = groups.find((g: any) => g.name === IDLE_ANIM);
+        anims.running      = groups.find((g: any) => g.name === JOG_ANIM);
+        anims.jumpStart    = groups.find((g: any) => g.name === JUMP_START);
+        anims.jumpApex     = groups.find((g: any) => g.name === JUMP_APEX);
+        anims.jumpPreland  = groups.find((g: any) => g.name === JUMP_PRELAND);
+        anims.jumpRecovery = groups.find((g: any) => g.name === JUMP_RECOVERY);
+        anims.sliding      = groups.find((g: any) => g.name === SLIDING_ANIM);
+        anims.stagger      = groups.find((g: any) => g.name === STAGGER_ANIM);
+        anims.dead         = groups.find((g: any) => g.name === DEAD_ANIM);
+        anims.jogLeft      = groups.find((g: any) => g.name === JOG_LEFT_ANIM);
+        anims.jogRight     = groups.find((g: any) => g.name === JOG_RIGHT_ANIM);
+        anims.jumping      = anims.jumpStart;
 
         if (!anims.running && groups.length > 0) anims.running = groups[0];
 
@@ -1278,6 +1295,9 @@ export default function GameCanvas({
 
     // ── CLEANUP ───────────────────────────────────────────────────────────────
     return () => {
+      // Trigger dynamic crossfade back to exploration/lounge track
+      AbyssumBGM.crossfadeTo('lounge', 1.5);
+
       window.removeEventListener('keydown',   onKeyDown);
       window.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('resize',    onResize);
