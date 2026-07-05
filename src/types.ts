@@ -47,10 +47,11 @@ export interface ObstacleData {
 
 export interface CollectibleData {
   id: string;
-  type: 'COIN' | 'ENERGY_CELL' | 'SHIELD_POWERUP' | 'MAGNET_POWERUP' | 'VELOCITY_BURST' | 'POWERUP_PLASMA_BLADE' | 'POWERUP_ION_BLASTER';
+  type: 'COIN' | 'ENERGY_CELL' | 'SHIELD_POWERUP' | 'MAGNET_POWERUP' | 'VELOCITY_BURST' | 'POWERUP_PLASMA_BLADE' | 'POWERUP_ION_BLASTER' | 'coin_erc1155' | 'mi_card_erc1155';
   lane: Lane;
   zPosition: number;
   hasBeenCollected: boolean;
+  tokenId?: string;
 }
 
 export interface DiscrepancyLog {
@@ -81,6 +82,8 @@ export interface PlayerState {
   isSliding: boolean;
   isBurstActive?: boolean;
   burstTimeRemaining?: number;
+  isMagnetActive?: boolean;
+  magnetTimeRemaining?: number;
   activeWeapon?: WeaponType;
   weaponCharges?: number;
   bonusScore?: number;

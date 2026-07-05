@@ -1,6 +1,6 @@
 import React from 'react';
 import { PlayerState, GameState } from '../types';
-import { Shield, Zap, Heart, Trophy, ZapOff, Play, Pause, ChevronRight, Eye, Terminal, Trash2, Compass } from 'lucide-react';
+import { Shield, Zap, Heart, Trophy, ZapOff, Play, Pause, ChevronRight, Eye, Terminal, Trash2, Compass, Magnet } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ProximityLogPanel from './ProximityLogPanel';
 import { SentinelRegistry } from '../utils/sentinel';
@@ -18,7 +18,25 @@ export default function GameHUD({
   onPauseToggle,
   onExitToLounge
 }: GameHUDProps) {
+  const [showDiagnostics, setShowDiagnostics] = React.useState<boolean>(false);
   const [activeToasts, setActiveToasts] = React.useState<Array<{ id: string; distance: number; label: string }>>([]);
+
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (gameState !== GameState.PLAYING && gameState !== GameState.PAUSED) return;
+      const key = e.key.toLowerCase();
+      if (key === 't' || e.key === 'Tab') {
+        if (e.key === 'Tab') {
+          e.preventDefault();
+        }
+        setShowDiagnostics(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [gameState]);
   const [activeSectorToast, setActiveSectorToast] = React.useState<{
     name: string;
     label: string;
@@ -400,8 +418,10 @@ export default function GameHUD({
             )}
           </div>
 
-          {/* Cosmic Sector Location Monitor */}
-          <div className="bg-black/85 p-3 rounded backdrop-blur-md w-72 pointer-events-auto flex flex-col gap-2 relative overflow-hidden shadow-[0_0_20px_rgba(0,0,0,0.8)] border border-zinc-800">
+          {showDiagnostics && (
+            <>
+              {/* Cosmic Sector Location Monitor */}
+              <div className="bg-black/85 p-3 rounded backdrop-blur-md w-72 pointer-events-auto flex flex-col gap-2 relative overflow-hidden shadow-[0_0_20px_rgba(0,0,0,0.8)] border border-zinc-800">
             {/* Ambient sector glowing header line */}
             <div 
               className="absolute top-0 left-0 h-[1.5px] w-full"
@@ -481,20 +501,29 @@ export default function GameHUD({
                 }`} />
                 Sentinel Core
               </div>
-              <span className={`text-[8px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                playerStats.sentinelStatus === 'ANOMALY_DETECTED' 
-                  ? 'bg-red-950/40 border border-red-800 text-red-400' 
-                  : (playerStats.sentinelWarnings && playerStats.sentinelWarnings.length > 0)
-                    ? 'bg-amber-950/40 border border-amber-800 text-amber-400'
-                    : 'bg-cyan-950/40 border border-cyan-800 text-cyan-400'
-              }`}>
-                {playerStats.sentinelStatus === 'ANOMALY_DETECTED' 
-                  ? 'ANOMALY_DETECTED' 
-                  : (playerStats.sentinelWarnings && playerStats.sentinelWarnings.length > 0)
-                    ? 'LIMIT_WARNING'
-                    : 'SECURE'
-                }
-              </span>
+              <div className="flex gap-1.5 items-center">
+                <button
+                  onClick={() => window.dispatchEvent(new CustomEvent('cyber-runner-toggle-inspector'))}
+                  className="text-[8px] font-mono font-bold px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-[#F27D26] hover:border-[#F27D26] transition cursor-pointer flex items-center gap-1"
+                  title="Toggle Babylon.js 3D Inspector overlay"
+                >
+                  Inspect 3D
+                </button>
+                <span className={`text-[8px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                  playerStats.sentinelStatus === 'ANOMALY_DETECTED' 
+                    ? 'bg-red-950/40 border border-red-800 text-red-400' 
+                    : (playerStats.sentinelWarnings && playerStats.sentinelWarnings.length > 0)
+                      ? 'bg-amber-950/40 border border-amber-800 text-amber-400'
+                      : 'bg-cyan-950/40 border border-cyan-800 text-cyan-400'
+                }`}>
+                  {playerStats.sentinelStatus === 'ANOMALY_DETECTED' 
+                    ? 'ANOMALY_DETECTED' 
+                    : (playerStats.sentinelWarnings && playerStats.sentinelWarnings.length > 0)
+                      ? 'LIMIT_WARNING'
+                      : 'SECURE'
+                  }
+                </span>
+              </div>
             </div>
 
             {/* Constitution Schema Version Indicator */}
@@ -687,10 +716,26 @@ export default function GameHUD({
               )}
             </div>
           </div>
+          </>
+          )}
         </div>
 
         {/* Right Side: Quick System Controls */}
         <div className="flex gap-3 pointer-events-auto">
+          {/* Telemetry Toggle Button */}
+          <button
+            onClick={() => setShowDiagnostics(!showDiagnostics)}
+            className={`px-3 py-2 bg-black/75 border rounded font-bold font-mono text-[10px] uppercase tracking-wider flex items-center gap-1.5 transition cursor-pointer ${
+              showDiagnostics
+                ? 'border-[#F27D26] text-[#F27D26] hover:bg-[#F27D26]/10 shadow-[0_0_10px_rgba(242,125,38,0.2)]'
+                : 'border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700'
+            }`}
+            title="Toggle Diagnostics / Telemetry panel [Tab] or [T]"
+          >
+            <Terminal size={10} className={showDiagnostics ? 'text-[#F27D26]' : ''} />
+            {showDiagnostics ? 'Telemetry: ON' : 'Telemetry: OFF'}
+          </button>
+
           <button
             onClick={onPauseToggle}
             className="px-4 py-2 bg-black/75 border border-zinc-800 hover:border-zinc-700 hover:bg-black text-zinc-300 hover:text-white rounded font-bold font-mono text-[10px] uppercase tracking-wider flex items-center gap-1.5 transition cursor-pointer"
@@ -735,6 +780,20 @@ export default function GameHUD({
             {playerStats.burstTimeRemaining !== undefined && (
               <div className="text-[9px] text-fuchsia-400 font-bold tracking-wider font-mono">
                 OVERLOAD DURATION: {Math.max(0, playerStats.burstTimeRemaining).toFixed(1)}s
+              </div>
+            )}
+          </div>
+        )}
+
+        {playerStats.isMagnetActive && (
+          <div className="bg-emerald-500/20 border border-emerald-500 px-4 py-2 rounded flex flex-col items-center gap-1 animate-pulse backdrop-blur-sm shadow-[0_0_20px_rgba(16,185,129,0.35)] pointer-events-auto">
+            <div className="flex items-center gap-2">
+              <Magnet size={14} className="text-emerald-400 animate-bounce" />
+              <span className="text-xs text-emerald-300 font-bold uppercase tracking-widest font-mono text-glow-emerald">COIN MAGNET ACTIVE</span>
+            </div>
+            {playerStats.magnetTimeRemaining !== undefined && (
+              <div className="text-[9px] text-emerald-400 font-bold tracking-wider font-mono">
+                ATTRACTION DURATION: {Math.max(0, playerStats.magnetTimeRemaining).toFixed(1)}s
               </div>
             )}
           </div>
@@ -793,7 +852,7 @@ export default function GameHUD({
         )}
       </div>
 
-      {playerStats && (
+      {playerStats && showDiagnostics && (
         <ProximityLogPanel logs={playerStats.proximityLogs || []} />
       )}
 

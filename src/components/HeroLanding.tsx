@@ -386,7 +386,18 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
       hmiNodesRef.current.gltfHeadMesh = null;
     }
 
-    SceneLoader.ImportMeshAsync('', '', gltfModelUrl, scene)
+    let processedUrl = gltfModelUrl.trim();
+    if (processedUrl.startsWith('/public/')) {
+      processedUrl = processedUrl.replace('/public/', '/');
+    } else if (processedUrl.startsWith('public/')) {
+      processedUrl = processedUrl.replace('public/', '/');
+    }
+
+    const lastSlash = processedUrl.lastIndexOf('/');
+    const rootUrl = lastSlash !== -1 ? processedUrl.substring(0, lastSlash + 1) : '';
+    const fileName = lastSlash !== -1 ? processedUrl.substring(lastSlash + 1) : processedUrl;
+
+    SceneLoader.ImportMeshAsync('', rootUrl, fileName, scene)
       .then((result) => {
         setIsModelLoading(false);
         setModelLoadedSuccess(true);

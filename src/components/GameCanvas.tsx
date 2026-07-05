@@ -20,6 +20,7 @@ import {
   CreateCylinder,
   CreateSphere,
   CreateBox,
+  CreateTorus,
   TransformNode,
   DynamicTexture,
   Mesh,
@@ -27,6 +28,9 @@ import {
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader';
 import '@babylonjs/loaders/glTF';
 import '@babylonjs/inspector';
+import * as BABYLON from '@babylonjs/core';
+
+import { mintForgeAsset, mintLoreCard } from '../utils/web3Service';
 
 import {
   GameState,
@@ -54,6 +58,13 @@ const BURST_DURATION = 3.5;
 const ATTACK_COOLDOWN = 0.35;
 const SCAN_DURATION_MAX  = 5.0;
 const SCAN_COOLDOWN_MAX  = 18.0;
+
+const COIN_GLB_PATH = "coin2.glb";
+const MI_CARD_IMG_PATH = "ChatGPT Image Jun 8, 2026, 11_56_33 AM.png";
+
+// ERC-1155 token IDs — matches AbyssumAssets contract
+const TOKEN_ID_COIN = "1";       // mintForgeAsset → Crypto Coin
+const TOKEN_ID_MI_CARD = "2";    // mintLoreCard   → Mission Intel Card
 
 // ── DEPTH PALETTES ────────────────────────────────────────────────────────────
 
@@ -89,6 +100,8 @@ interface GameCanvasProps {
   };
   onStatsUpdate: (stats: PlayerState) => void;
   onGameOver: () => void;
+  pilotAddress?: string;
+  addToLoadout?: (item: { tokenId: string; type: string; imageUrl?: string }) => void;
 }
 
 type AnimState = 'IDLE' | 'RUNNING' | 'JUMPING' | 'SLIDING' | 'STAGGER' | 'DEAD';
@@ -269,6 +282,18 @@ export default function GameCanvas({
   selectedGear,
   onStatsUpdate,
   onGameOver,
+  pilotAddress = '0xAbyssumPilotAddress7777777777777777777777',
+  addToLoadout = (item) => {
+    console.log('[GameCanvas] Item added to loadout locally:', item);
+    try {
+      const existingStr = localStorage.getItem('cyber_runner_minted_collectibles') || '[]';
+      const existing = JSON.parse(existingStr);
+      if (!existing.some((e: any) => e.tokenId === item.tokenId)) {
+        existing.push(item);
+        localStorage.setItem('cyber_runner_minted_collectibles', JSON.stringify(existing));
+      }
+    } catch (e) { console.error(e); }
+  }
 }: GameCanvasProps) {
   const canvasRef       = useRef<HTMLCanvasElement | null>(null);
   const sceneRef        = useRef<Scene | null>(null);
@@ -291,8 +316,8 @@ export default function GameCanvas({
   useEffect(() => {
     if (!canvasRef.current || gameState !== GameState.PLAYING) return;
 
-    // Trigger dynamic crossfade to high-tempo action track
-    AbyssumBGM.crossfadeTo('action', 1.5);
+    // Pause the background music during the runner gameplay
+    AbyssumBGM.pause();
 
     // ── ENGINE SETUP ──────────────────────────────────────────────────────────
     const quality   = localStorage.getItem('cyber_runner_graphics_quality') ?? 'balanced';
@@ -471,6 +496,17 @@ export default function GameCanvas({
     shield.material  = shieldMat;
     shield.parent    = charRoot;
     shield.isVisible = selectedGear.hasShield;
+
+    // Magnet aura
+    const magnetAura = CreateSphere('magnetAura', { diameter: 2.2, segments: 16 }, scene);
+    magnetAura.position.y = 0.9;
+    const magnetAuraMat = new StandardMaterial('magnetAuraMat', scene);
+    magnetAuraMat.diffuseColor  = new Color3(0.0, 0.9, 0.35);
+    magnetAuraMat.emissiveColor = new Color3(0.1, 0.95, 0.4);
+    magnetAuraMat.alpha = 0.0;
+    magnetAura.material  = magnetAuraMat;
+    magnetAura.parent    = charRoot;
+    magnetAura.isVisible = false;
 
     // ── GLB LOADER ────────────────────────────────────────────────────────────
     let gltfLoaded    = false;
@@ -675,9 +711,13 @@ export default function GameCanvas({
     shieldPUMat.diffuseColor = new Color3(0, 0.6, 1);
     shieldPUMat.emissiveColor = new Color3(0.1, 0.8, 1);
 
+    const magnetMat = new StandardMaterial('magnet', scene);
+    magnetMat.diffuseColor = new Color3(0.1, 0.85, 0.3);
+    magnetMat.emissiveColor = new Color3(0.05, 0.75, 0.2);
+
     // ── SPAWN HELPERS ─────────────────────────────────────────────────────────
     const activeObstacles:   { mesh: Mesh; data: ObstacleData }[]   = [];
-    const activeCollectibles: { mesh: Mesh; data: CollectibleData }[] = [];
+    const activeCollectibles: { mesh: BABYLON.AbstractMesh; data: CollectibleData }[] = [];
 
     const randLane = () => ([Lane.LEFT, Lane.CENTER, Lane.RIGHT] as Lane[])[Math.floor(Math.random() * 3)];
 
@@ -705,14 +745,26 @@ export default function GameCanvas({
 
     const spawnCollectible = (z: number) => {
       const r    = Math.random();
-      const type = r < 0.44 ? 'COIN'
-                 : r < 0.58 ? 'ENERGY_CELL'
-                 : r < 0.70 ? 'SHIELD_POWERUP'
-                 : r < 0.82 ? 'VELOCITY_BURST'
+      const type = r < 0.28 ? 'COIN'
+                 : r < 0.38 ? 'coin_erc1155'
+                 : r < 0.45 ? 'mi_card_erc1155'
+                 : r < 0.55 ? 'ENERGY_CELL'
+                 : r < 0.65 ? 'SHIELD_POWERUP'
+                 : r < 0.75 ? 'VELOCITY_BURST'
+                 : r < 0.82 ? 'MAGNET_POWERUP'
                  : r < 0.91 ? 'POWERUP_PLASMA_BLADE'
-                 :             'POWERUP_ION_BLASTER';
+                 :            'POWERUP_ION_BLASTER';
       const lane = randLane();
-      let mesh: Mesh;
+
+      if (type === 'coin_erc1155') {
+        spawnERC1155Coin(scene, lane, z, activeCollectibles);
+        return;
+      } else if (type === 'mi_card_erc1155') {
+        spawnMICard(scene, lane, z, activeCollectibles);
+        return;
+      }
+
+      let mesh: BABYLON.AbstractMesh;
 
       if (type === 'COIN') {
         mesh = CreateCylinder('coin', { height: 0.08, diameter: 0.4, tessellation: 12 }, scene);
@@ -733,6 +785,11 @@ export default function GameCanvas({
         mesh = CreateCylinder('burst', { height: 0.5, diameterTop: 0, diameterBottom: 0.35, tessellation: 6 }, scene);
         mesh.position.set(lane * LANE_WIDTH, 0.7, z);
         mesh.material = burstMat;
+      } else if (type === 'MAGNET_POWERUP') {
+        mesh = CreateTorus('magnet', { diameter: 0.45, thickness: 0.12, tessellation: 12 }, scene);
+        mesh.rotation.x = Math.PI / 4;
+        mesh.position.set(lane * LANE_WIDTH, 0.65, z);
+        mesh.material = magnetMat;
       } else if (type === 'POWERUP_PLASMA_BLADE') {
         mesh = CreateSphere('bladeBase', { diameter: 0.35, segments: 12 }, scene);
         mesh.position.set(lane * LANE_WIDTH, 0.65, z);
@@ -818,6 +875,8 @@ export default function GameCanvas({
 
     let burstActiveLocal = false;
     let burstTimer       = 0;
+    let magnetActiveLocal = false;
+    let magnetTimer       = 0;
     let scanActive       = false;
     let scanTimer        = 0;
     let scanCooldown     = 0;
@@ -931,10 +990,13 @@ export default function GameCanvas({
       simAnomalyType = (e as CustomEvent).detail?.type ?? 'speed';
     };
 
+    const onToggleInspectorEvt = () => toggleInspector();
+
     window.addEventListener('keydown',                    onKeyDown);
     window.addEventListener('pointerdown',                onPointerDown);
     window.addEventListener('cyber-runner-trigger-scan',  onScanEvent);
     window.addEventListener('cyber-runner-trigger-anomaly', onAnomalyEvt);
+    window.addEventListener('cyber-runner-toggle-inspector', onToggleInspectorEvt);
 
     // ── RENDER LOOP ───────────────────────────────────────────────────────────
     scene.onBeforeRenderObservable.add(() => {
@@ -962,8 +1024,28 @@ export default function GameCanvas({
         burstTimer -= dt;
         if (burstTimer <= 0) { burstActiveLocal = false; setIsBurstActive(false); }
         ps.speed = baseSpeed + 30;
+        ps.isBurstActive = true;
+        ps.burstTimeRemaining = Math.max(0, burstTimer);
       } else {
         ps.speed = baseSpeed;
+        ps.isBurstActive = false;
+        ps.burstTimeRemaining = 0;
+      }
+
+      // ── MAGNET POWERUP UPDATE ────────────────────────────────────────────────
+      if (magnetActiveLocal) {
+        magnetTimer -= dt;
+        if (magnetTimer <= 0) { magnetActiveLocal = false; }
+        ps.isMagnetActive = true;
+        ps.magnetTimeRemaining = Math.max(0, magnetTimer);
+        
+        magnetAura.isVisible = true;
+        magnetAuraMat.alpha = 0.08 + 0.04 * Math.sin(gameTime * 20);
+        magnetAura.scaling.setAll(1.0 + 0.05 * Math.sin(gameTime * 10));
+      } else {
+        ps.isMagnetActive = false;
+        ps.magnetTimeRemaining = 0;
+        magnetAura.isVisible = false;
       }
 
       // Camera FOV during burst
@@ -1155,6 +1237,22 @@ export default function GameCanvas({
         col.mesh.position.z -= fd;
         col.mesh.rotation.y += dt * 3;
         col.data.zPosition   = col.mesh.position.z;
+
+        // If magnet is active, pull coins or energy cells towards the character
+        if (magnetActiveLocal && col.mesh.position.z > 0 && col.mesh.position.z < 25) {
+          const targetX = ps.xPosition;
+          // Smoothly attract in X toward character position
+          col.mesh.position.x += (targetX - col.mesh.position.x) * dt * 7.5;
+          
+          // Smoothly attract in Y toward character chest/hips
+          const targetY = (gltfLoaded && gltfRoot ? gltfRoot : charRoot).position.y + 0.65;
+          col.mesh.position.y += (targetY - col.mesh.position.y) * dt * 7.5;
+
+          // If close enough horizontally, snap the lane to the player's current lane so the collision system triggers
+          if (Math.abs(col.mesh.position.x - targetX) < 1.0) {
+            col.data.lane = ps.currentLane;
+          }
+        }
       });
 
       // ── COLLISION: OBSTACLES ────────────────────────────────────────────────
@@ -1216,34 +1314,52 @@ export default function GameCanvas({
         if (col.data.lane !== ps.currentLane) return;
         if (Math.abs(col.mesh.position.z) >= 0.8) return;
         col.data.hasBeenCollected = true;
-        col.mesh.dispose();
-        playSFX('collect', isMutedRef.current);
 
-        if (col.data.type === 'COIN') {
-          ps.coins++; ps.score += 50;
-        } else if (col.data.type === 'ENERGY_CELL') {
-          ps.energy = Math.min(ps.maxEnergy, ps.energy + 30);
-        } else if (col.data.type === 'SHIELD_POWERUP') {
-          ps.shieldActive = true; ps.shieldRemaining = 100;
-          shield.isVisible = true;
-          (shield.material as StandardMaterial).alpha = 0.22;
-          ps.bonusScore = (ps.bonusScore ?? 0) + 150;
-        } else if (col.data.type === 'VELOCITY_BURST') {
-          burstActiveLocal = true; burstTimer = BURST_DURATION;
-          setIsBurstActive(true);
-          playSFX('speed_boost', isMutedRef.current);
-          triggerVibration([80, 50, 80]);
-          ps.multiplier = Math.min(10, ps.multiplier + 1);
-        } else if (col.data.type === 'POWERUP_PLASMA_BLADE') {
-          ps.activeWeapon  = WeaponType.PLASMA_BLADE;
-          ps.weaponCharges = Math.min(10, (ps.weaponCharges ?? 0) + 5);
-          updateWeaponMesh(WeaponType.PLASMA_BLADE);
-          ps.bonusScore = (ps.bonusScore ?? 0) + 100;
-        } else if (col.data.type === 'POWERUP_ION_BLASTER') {
-          ps.activeWeapon  = WeaponType.BLASTER;
-          ps.weaponCharges = Math.min(10, (ps.weaponCharges ?? 0) + 5);
-          updateWeaponMesh(WeaponType.BLASTER);
-          ps.bonusScore = (ps.bonusScore ?? 0) + 100;
+        if (col.data.type === 'coin_erc1155' || col.data.type === 'mi_card_erc1155') {
+          handleERC1155Collect(col.mesh, pilotAddress, addToLoadout);
+          playSFX('collect', isMutedRef.current);
+          if (col.data.type === 'coin_erc1155') {
+            ps.coins++; ps.score += 250;
+            ps.bonusScore = (ps.bonusScore ?? 0) + 200;
+          } else {
+            ps.score += 1000;
+            ps.bonusScore = (ps.bonusScore ?? 0) + 500;
+          }
+        } else {
+          col.mesh.dispose();
+          playSFX('collect', isMutedRef.current);
+
+          if (col.data.type === 'COIN') {
+            ps.coins++; ps.score += 50;
+          } else if (col.data.type === 'ENERGY_CELL') {
+            ps.energy = Math.min(ps.maxEnergy, ps.energy + 30);
+          } else if (col.data.type === 'SHIELD_POWERUP') {
+            ps.shieldActive = true; ps.shieldRemaining = 100;
+            shield.isVisible = true;
+            (shield.material as StandardMaterial).alpha = 0.22;
+            ps.bonusScore = (ps.bonusScore ?? 0) + 150;
+          } else if (col.data.type === 'VELOCITY_BURST') {
+            burstActiveLocal = true; burstTimer = BURST_DURATION;
+            setIsBurstActive(true);
+            playSFX('speed_boost', isMutedRef.current);
+            triggerVibration([80, 50, 80]);
+            ps.multiplier = Math.min(10, ps.multiplier + 1);
+          } else if (col.data.type === 'MAGNET_POWERUP') {
+            magnetActiveLocal = true; magnetTimer = 8.0;
+            playSFX('speed_boost', isMutedRef.current);
+            triggerVibration([60, 60, 60]);
+            ps.bonusScore = (ps.bonusScore ?? 0) + 150;
+          } else if (col.data.type === 'POWERUP_PLASMA_BLADE') {
+            ps.activeWeapon  = WeaponType.PLASMA_BLADE;
+            ps.weaponCharges = Math.min(10, (ps.weaponCharges ?? 0) + 5);
+            updateWeaponMesh(WeaponType.PLASMA_BLADE);
+            ps.bonusScore = (ps.bonusScore ?? 0) + 100;
+          } else if (col.data.type === 'POWERUP_ION_BLASTER') {
+            ps.activeWeapon  = WeaponType.BLASTER;
+            ps.weaponCharges = Math.min(10, (ps.weaponCharges ?? 0) + 5);
+            updateWeaponMesh(WeaponType.BLASTER);
+            ps.bonusScore = (ps.bonusScore ?? 0) + 100;
+          }
         }
       });
 
@@ -1295,18 +1411,222 @@ export default function GameCanvas({
 
     // ── CLEANUP ───────────────────────────────────────────────────────────────
     return () => {
-      // Trigger dynamic crossfade back to exploration/lounge track
-      AbyssumBGM.crossfadeTo('lounge', 1.5);
+      // Resume the background music when exiting the runner
+      AbyssumBGM.play();
 
       window.removeEventListener('keydown',   onKeyDown);
       window.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('resize',    onResize);
       window.removeEventListener('cyber-runner-trigger-scan',    onScanEvent);
       window.removeEventListener('cyber-runner-trigger-anomaly', onAnomalyEvt);
+      window.removeEventListener('cyber-runner-toggle-inspector', onToggleInspectorEvt);
       sceneRef.current = null;
       engine.dispose();
     };
   }, [gameState]);
+
+  // ── ERC-1155 SPANNING & COLLECTION FUNCTIONS ────────────────────────────────
+  const spawnERC1155Coin = async (
+    scene: BABYLON.Scene,
+    lane: number,
+    zPosition: number,
+    activeCollectibles: any[]
+  ): Promise<void> => {
+    try {
+      const result = await BABYLON.SceneLoader.ImportMeshAsync(
+        "",
+        "/",
+        COIN_GLB_PATH,
+        scene
+      );
+
+      const coinRoot = result.meshes[0];
+      coinRoot.name = `erc1155_coin_${Date.now()}`;
+      coinRoot.position = new BABYLON.Vector3(
+        lane * LANE_WIDTH,
+        0.5,
+        zPosition
+      );
+      coinRoot.scaling = new BABYLON.Vector3(0.4, 0.4, 0.4);
+
+      // Spin animation
+      const spinAnim = new BABYLON.Animation(
+        "coinSpin",
+        "rotation.y",
+        60,
+        BABYLON.Animation.ANIMATIONTYPE_FLOAT,
+        BABYLON.Animation.ANIMATIONLOOPMODE_CYCLE
+      );
+      spinAnim.setKeys([
+        { frame: 0, value: 0 },
+        { frame: 60, value: Math.PI * 2 },
+      ]);
+      coinRoot.animations = [spinAnim];
+      scene.beginAnimation(coinRoot, 0, 60, true);
+
+      // Collision detection metadata
+      coinRoot.metadata = {
+        collectibleType: "coin_erc1155",
+        tokenId: TOKEN_ID_COIN,
+        collected: false,
+      };
+
+      activeCollectibles.push({
+        mesh: coinRoot,
+        data: {
+          id: Math.random().toString(),
+          type: 'coin_erc1155',
+          lane,
+          zPosition,
+          hasBeenCollected: false,
+          tokenId: TOKEN_ID_COIN
+        }
+      });
+
+    } catch (err) {
+      console.warn("ERC-1155 coin GLB failed to load, falling back to sphere:", err);
+      // Fallback: plain sphere so the lane is never empty
+      const fallback = BABYLON.MeshBuilder.CreateSphere(
+        `coin_fallback_${Date.now()}`,
+        { diameter: 0.6 },
+        scene
+      );
+      fallback.position = new BABYLON.Vector3(
+        lane * LANE_WIDTH,
+        0.5,
+        zPosition
+      );
+      const mat = new BABYLON.StandardMaterial("coinMat", scene);
+      mat.emissiveColor = BABYLON.Color3.Yellow();
+      fallback.material = mat;
+      fallback.metadata = {
+        collectibleType: "coin_erc1155",
+        tokenId: TOKEN_ID_COIN,
+        collected: false,
+      };
+
+      activeCollectibles.push({
+        mesh: fallback,
+        data: {
+          id: Math.random().toString(),
+          type: 'coin_erc1155',
+          lane,
+          zPosition,
+          hasBeenCollected: false,
+          tokenId: TOKEN_ID_COIN
+        }
+      });
+    }
+  };
+
+  const spawnMICard = (
+    scene: BABYLON.Scene,
+    lane: number,
+    zPosition: number,
+    activeCollectibles: any[]
+  ): void => {
+    const card = BABYLON.MeshBuilder.CreatePlane(
+      `mi_card_${Date.now()}`,
+      { width: 1.2, height: 1.8 },
+      scene
+    );
+
+    card.position = new BABYLON.Vector3(
+      lane * LANE_WIDTH,
+      1.0,
+      zPosition
+    );
+
+    // Always face the camera (billboard mode)
+    card.billboardMode = BABYLON.Mesh.BILLBOARDMODE_Y;
+
+    const mat = new BABYLON.StandardMaterial("miCardMat", scene);
+    mat.diffuseTexture = new BABYLON.Texture(
+      `/${MI_CARD_IMG_PATH}`,
+      scene
+    );
+    mat.diffuseTexture.hasAlpha = true;
+    mat.backFaceCulling = false;
+    mat.emissiveColor = new BABYLON.Color3(0.8, 0.8, 0.8); // slight glow
+    card.material = mat;
+
+    card.metadata = {
+      collectibleType: "mi_card_erc1155",
+      tokenId: TOKEN_ID_MI_CARD,
+      collected: false,
+      destroyable: true, // hooks into existing destroyable system
+    };
+
+    // Pulse scale animation
+    const pulseAnim = new BABYLON.Animation(
+      "cardPulse",
+      "scaling.x",
+      30,
+      BABYLON.Animation.ANIMATIONTYPE_FLOAT,
+      BABYLON.Animation.ANIMATIONLOOPMODE_CYCLE
+    );
+    pulseAnim.setKeys([
+      { frame: 0, value: 1.0 },
+      { frame: 15, value: 1.08 },
+      { frame: 30, value: 1.0 },
+    ]);
+    card.animations = [pulseAnim];
+    scene.beginAnimation(card, 0, 30, true);
+
+    activeCollectibles.push({
+      mesh: card,
+      data: {
+        id: Math.random().toString(),
+        type: 'mi_card_erc1155',
+        lane,
+        zPosition,
+        hasBeenCollected: false,
+        tokenId: TOKEN_ID_MI_CARD
+      }
+    });
+  };
+
+  const handleERC1155Collect = async (
+    mesh: BABYLON.AbstractMesh,
+    pilotAddress: string,
+    addToLoadout: (item: { tokenId: string; type: string; imageUrl?: string }) => void
+  ): Promise<void> => {
+    if (!mesh.metadata || mesh.metadata.collected) return;
+
+    mesh.metadata.collected = true;
+    mesh.setEnabled(false); // hide immediately
+
+    const { collectibleType, tokenId } = mesh.metadata;
+
+    // ── Add to local loadout immediately (optimistic UI) ──────────────────────
+    addToLoadout({
+      tokenId,
+      type: collectibleType,
+      imageUrl: collectibleType === "mi_card_erc1155" ? `/${MI_CARD_IMG_PATH}` : undefined,
+    });
+
+    // ── ERC-1155 mint — fires async, does not block gameplay ─────────────────
+    try {
+      if (collectibleType === "coin_erc1155") {
+        const result = await mintForgeAsset({
+          pilotAddress,
+          assetName: "Abyssum Runner Coin",
+          metadataUri: "ipfs://YOUR_COIN_METADATA_CID",
+        });
+        console.log("Coin minted:", result.tokenId, result.txHash);
+      } else if (collectibleType === "mi_card_erc1155") {
+        const result = await mintLoreCard({
+          pilotAddress,
+          cardId: "MI-CARD-001",
+          cardName: "Mission Intel Alpha",
+          metadataUri: "ipfs://YOUR_CARD_METADATA_CID",
+        });
+        console.log("MI Card minted:", result.tokenId, result.txHash);
+      }
+    } catch (err) {
+      console.warn("Mint failed — collectible saved to loadout locally:", err);
+    }
+  };
 
   // ── RENDER ──────────────────────────────────────────────────────────────────
   return (
@@ -1357,14 +1677,6 @@ export default function GameCanvas({
         className="w-full h-full block outline-none"
         style={isBurstActive ? { filter: 'url(#motion-blur-filter)' } : undefined}
       />
-
-      <button
-        onClick={toggleInspector}
-        className="absolute top-4 right-4 z-20 px-3 py-1.5 bg-black/70 hover:bg-black/90 border border-[#F27D26]/40 hover:border-[#F27D26] rounded text-[10px] font-mono tracking-wider text-[#F27D26] uppercase select-none transition-all duration-150 flex items-center gap-1.5 cursor-pointer shadow-lg"
-      >
-        <span className={`w-1.5 h-1.5 rounded-full ${inspectorOpen ? 'bg-green-500 animate-ping' : 'bg-[#F27D26]'}`} />
-        {inspectorOpen ? 'CLOSE INSPECTOR' : 'DEBUG INSPECTOR'}
-      </button>
     </div>
   );
 }

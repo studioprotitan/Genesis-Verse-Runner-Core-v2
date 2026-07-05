@@ -133,6 +133,13 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
+  // HMI Custom Head Asset loading state
+  const [headGltfUrl, setHeadGltfUrl] = useState('');
+  const [isHeadLoading, setIsHeadLoading] = useState(false);
+  const [headLoadError, setHeadLoadError] = useState<string | null>(null);
+  const [headLoadedSuccess, setHeadLoadedSuccess] = useState(false);
+  const loadedCustomHeadRef = useRef<any>(null);
+
   const [testKeyPressed, setTestKeyPressed] = useState<string | null>(null);
   const [testActionName, setTestActionName] = useState<string | null>(null);
 
@@ -392,12 +399,17 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
 
   const playCurrentAnimation = () => {
     if (!loadedAnimsRef.current.allGroups) return;
-    loadedAnimsRef.current.allGroups.forEach(g => g.stop());
+    loadedAnimsRef.current.allGroups.forEach(g => {
+      g.stop();
+      g.weight = 0;
+    });
     const mode = animationModeRef.current;
     if (mode === 'IDLE' && loadedAnimsRef.current.idleAnim) {
-      loadedAnimsRef.current.idleAnim.start(true);
+      loadedAnimsRef.current.idleAnim.weight = 1.0;
+      loadedAnimsRef.current.idleAnim.play(true);
     } else if (mode === 'JOGGING' && loadedAnimsRef.current.jogAnim) {
-      loadedAnimsRef.current.jogAnim.start(true);
+      loadedAnimsRef.current.jogAnim.weight = 1.0;
+      loadedAnimsRef.current.jogAnim.play(true);
     }
   };
 
@@ -521,6 +533,78 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
       .catch((err) => {
         console.warn(`Could not load GLTF model (${targetModelUrl}). Running ultra-beautiful procedural render:`, err);
         isGltfLoadingRef.current = false;
+      });
+  };
+
+  const handleLoadCustomHead = (targetScene: Scene | null, targetRoot: TransformNode | undefined) => {
+    if (!headGltfUrl.trim() || !targetScene || !targetRoot || isHeadLoading) return;
+    setIsHeadLoading(true);
+    setHeadLoadError(null);
+    setHeadLoadedSuccess(false);
+
+    // Play visualizer boot sound
+    playUISfx('toggle');
+
+    // Dispose previous custom head if any
+    if (loadedCustomHeadRef.current) {
+      loadedCustomHeadRef.current.dispose();
+      loadedCustomHeadRef.current = null;
+    }
+
+    let processedUrl = headGltfUrl.trim();
+    if (processedUrl.startsWith('/public/')) {
+      processedUrl = processedUrl.replace('/public/', '/');
+    } else if (processedUrl.startsWith('public/')) {
+      processedUrl = processedUrl.replace('public/', '/');
+    }
+
+    const lastSlash = processedUrl.lastIndexOf('/');
+    const rootUrl = lastSlash !== -1 ? processedUrl.substring(0, lastSlash + 1) : '';
+    const fileName = lastSlash !== -1 ? processedUrl.substring(lastSlash + 1) : processedUrl;
+
+    SceneLoader.ImportMeshAsync('', rootUrl, fileName, targetScene)
+      .then((result) => {
+        setIsHeadLoading(false);
+        setHeadLoadedSuccess(true);
+        playUISfx('boot');
+
+        const loadedRoot = result.meshes[0];
+        loadedCustomHeadRef.current = loadedRoot;
+
+        // Position & Scale the loaded Head model elegantly to sit on the neck
+        loadedRoot.parent = targetRoot;
+        loadedRoot.position = new Vector3(0, 1.6, 0);
+        loadedRoot.scaling = new Vector3(1.2, 1.2, 1.2);
+
+        // Hide procedural sphere headVisor placeholder
+        if (meshesRef.current.headVisor) {
+          meshesRef.current.headVisor.isVisible = false;
+        }
+
+        // Apply colors to the custom head meshes if applicable
+        result.meshes.forEach((mesh) => {
+          if (mesh && mesh.material) {
+            const mat = mesh.material;
+            const name = mat.name.toLowerCase();
+            const meshName = mesh.name.toLowerCase();
+            if (name.includes('visor') || name.includes('eye') || name.includes('glass') || name.includes('glow') || name.includes('light') || name.includes('emit') || name.includes('neon') ||
+                meshName.includes('visor') || meshName.includes('eye') || meshName.includes('glow') || meshName.includes('glass')) {
+              if ((mat as any).emissiveColor) (mat as any).emissiveColor = Color3.FromHexString(gear.visorColor);
+              if ((mat as any).diffuseColor) (mat as any).diffuseColor = Color3.FromHexString(gear.visorColor);
+            }
+          }
+        });
+      })
+      .catch((err) => {
+        console.error(err);
+        setIsHeadLoading(false);
+        setHeadLoadError('Failed to resolve or parse GLTF path. Check filename or connection.');
+        playUISfx('toggle');
+
+        // Re-enable procedural head if custom load fails and full model hasn't loaded
+        if (meshesRef.current.headVisor && !hasLoadedGltfRef.current) {
+          meshesRef.current.headVisor.isVisible = true;
+        }
       });
   };
 
@@ -766,7 +850,7 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
     coreBody.position.y = 0.75;
     coreBody.material = metalBodyMat;
     coreBody.parent = characterRoot;
-    coreBody.isVisible = false;
+    coreBody.isVisible = !hasLoadedGltfRef.current;
     meshesRef.current.coreBody = coreBody;
 
     // High-poly visor (head)
@@ -774,7 +858,7 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
     headVisor.position.y = 1.6;
     headVisor.material = neonVisorMat;
     headVisor.parent = characterRoot;
-    headVisor.isVisible = false;
+    headVisor.isVisible = !hasLoadedGltfRef.current && !loadedCustomHeadRef.current;
     meshesRef.current.headVisor = headVisor;
 
     // Beveled Chest Plate
@@ -782,7 +866,7 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
     chestPlate.position.set(0, 0.9, 0.18);
     chestPlate.material = chestEmissiveMat;
     chestPlate.parent = characterRoot;
-    chestPlate.isVisible = false;
+    chestPlate.isVisible = !hasLoadedGltfRef.current;
     meshesRef.current.chestPlate = chestPlate;
 
     // Arms
@@ -790,13 +874,13 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
     armL.position.set(-0.38, 0.95, 0);
     armL.material = metalDullMat;
     armL.parent = characterRoot;
-    armL.isVisible = false;
+    armL.isVisible = !hasLoadedGltfRef.current;
     meshesRef.current.armL = armL;
 
     const armR = armL.clone('armR');
     armR.position.x = 0.38;
     armR.parent = characterRoot;
-    armR.isVisible = false;
+    armR.isVisible = !hasLoadedGltfRef.current;
     meshesRef.current.armR = armR;
 
     // Legs
@@ -804,13 +888,13 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
     legL.position.set(-0.22, 0.35, 0);
     legL.material = metalDullMat;
     legL.parent = characterRoot;
-    legL.isVisible = false;
+    legL.isVisible = !hasLoadedGltfRef.current;
     meshesRef.current.legL = legL;
 
     const legR = legL.clone('legR');
     legR.position.x = 0.22;
     legR.parent = characterRoot;
-    legR.isVisible = false;
+    legR.isVisible = !hasLoadedGltfRef.current;
     meshesRef.current.legR = legR;
 
     // HUD Indicator above head
@@ -857,6 +941,16 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
 
       // Float the HUD ring above head
       hudRing.position.y = 2.15 + Math.sin(time * 2.0) * 0.04;
+
+      if (loadedCustomHeadRef.current) {
+        if (!hasLoadedGltfRef.current) {
+          loadedCustomHeadRef.current.rotation.x = headVisor.rotation.x;
+          loadedCustomHeadRef.current.rotation.y = headVisor.rotation.y;
+        } else {
+          loadedCustomHeadRef.current.rotation.x = Math.sin(time * 1.5) * 0.02;
+          loadedCustomHeadRef.current.rotation.y = Math.cos(time * 0.5) * 0.03;
+        }
+      }
 
       if (!hasLoadedGltfRef.current) {
         // Run procedural skeleton cycle based on selection
@@ -1345,6 +1439,36 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
                       );
                     })}
                   </div>
+                </div>
+
+                {/* HMI Custom Head GLTF/GLB Loader */}
+                <div className="space-y-2 border-t border-zinc-850 pt-3">
+                  <label className="text-[10px] font-mono text-zinc-500 uppercase flex items-center gap-1">
+                    <Cpu size={11} className="text-[#F27D26]" />
+                    HMI Head Node (glTF/GLB Loader)
+                  </label>
+                  <div className="flex gap-2 items-center">
+                    <input 
+                      type="text" 
+                      placeholder="Enter head .gltf / .glb URL (e.g. /public/idle.glb)..." 
+                      value={headGltfUrl}
+                      onChange={(e) => setHeadGltfUrl(e.target.value)}
+                      className="flex-1 bg-zinc-900 border border-zinc-800 text-[9px] font-mono px-2 py-1.5 text-zinc-300 rounded focus:outline-none focus:border-[#F27D26]"
+                    />
+                    <button 
+                      onClick={() => handleLoadCustomHead(sceneRef.current, meshesRef.current.characterRoot)}
+                      disabled={isHeadLoading}
+                      className="px-3 py-1.5 bg-zinc-900 hover:bg-[#F27D26]/20 border border-zinc-700 hover:border-[#F27D26] text-[9px] font-mono text-[#F27D26] font-bold uppercase rounded cursor-pointer transition flex items-center gap-1.5"
+                    >
+                      {isHeadLoading ? <RefreshCw className="w-3 h-3 animate-spin text-[#F27D26]" /> : 'Load Node'}
+                    </button>
+                  </div>
+                  {headLoadError && (
+                    <div className="text-[8px] font-mono text-rose-500 leading-tight">{headLoadError}</div>
+                  )}
+                  {headLoadedSuccess && (
+                    <div className="text-[8px] font-mono text-emerald-400 leading-tight">✔ HMI HEAD NODE LOADED & SYNCED</div>
+                  )}
                 </div>
 
                 {/* Chest Core Color */}
