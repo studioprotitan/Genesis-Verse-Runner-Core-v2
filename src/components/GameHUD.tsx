@@ -269,37 +269,6 @@ export default function GameHUD({
       {/* Sentinel High Priority Threat/Vigilance Alert Banner */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none flex flex-col items-center w-full max-w-lg px-4">
         <AnimatePresence>
-          {playerStats.sentinelStatus === 'ANOMALY_DETECTED' && playerStats.sentinelAnomalies && playerStats.sentinelAnomalies.length > 0 && (
-            <motion.div
-              initial={{ y: -100, opacity: 0, scale: 0.95 }}
-              animate={{ y: 0, opacity: 1, scale: 1 }}
-              exit={{ y: -100, opacity: 0, scale: 0.95 }}
-              transition={{ type: 'spring', damping: 12, stiffness: 150 }}
-              className="w-full bg-red-950/95 border-2 border-red-500 p-4 rounded shadow-[0_0_35px_rgba(239,68,68,0.5)] backdrop-blur-md relative overflow-hidden pointer-events-auto flex flex-col gap-1.5 text-center animate-pulse"
-            >
-              {/* Corner tech accents */}
-              <div className="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-red-400" />
-              <div className="absolute top-0 right-0 w-3 h-3 border-t-2 border-r-2 border-red-400" />
-              <div className="absolute bottom-0 left-0 w-3 h-3 border-b-2 border-l-2 border-red-400" />
-              <div className="absolute bottom-0 right-0 w-3 h-3 border-b-2 border-r-2 border-red-400" />
-              
-              <div className="text-xs font-black text-red-400 tracking-widest uppercase font-mono flex items-center justify-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
-                ⚠️ SENTINEL INTERCEPT: CRITICAL STATE BREACH ⚠️
-              </div>
-              <div className="text-[10px] text-zinc-300 font-mono">
-                System telemetry exceeded Operation: Styx Rising parameters. Safety protocols triggered.
-              </div>
-              <div className="mt-1 bg-red-900/20 border border-red-500/30 p-1.5 rounded text-left flex flex-col gap-1">
-                {playerStats.sentinelAnomalies.map((anomaly, idx) => (
-                  <div key={idx} className="text-[9px] font-mono text-red-200 leading-tight">
-                    ⚡ {anomaly}
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-          )}
-
           {/* Warning state banner: Approaching boundary */}
           {playerStats.sentinelStatus !== 'ANOMALY_DETECTED' && playerStats.sentinelWarnings && playerStats.sentinelWarnings.length > 0 && (
             <motion.div
@@ -1057,6 +1026,26 @@ export default function GameHUD({
           </div>
         </div>
       </div>
+
+      {/* Sentinel Bottom Ticker Alerts */}
+      {playerStats.sentinelStatus === 'ANOMALY_DETECTED' && playerStats.sentinelAnomalies && playerStats.sentinelAnomalies.length > 0 && (
+        <div className="absolute bottom-28 left-6 right-6 z-40 pointer-events-auto bg-red-950/90 border border-red-500/40 p-2 rounded shadow-[0_0_15px_rgba(239,68,68,0.35)] backdrop-blur-md flex items-center justify-between gap-3 animate-pulse">
+          <div className="flex items-center gap-2 overflow-hidden w-full">
+            <span className="w-2 h-2 rounded-full bg-red-500 animate-ping shrink-0" />
+            <span className="text-[9px] font-black text-red-400 uppercase tracking-widest shrink-0 font-mono">⚠️ SENTINEL INTERCEPT LOGS:</span>
+            <div className="text-[8.5px] text-zinc-300 font-mono overflow-x-auto whitespace-nowrap scrollbar-none flex gap-4 w-full">
+              {playerStats.sentinelAnomalies.map((anomaly, idx) => (
+                <span key={idx} className="shrink-0 bg-red-900/10 px-1 rounded border border-red-950/20">
+                  ⚡ {anomaly}
+                </span>
+              ))}
+            </div>
+          </div>
+          <span className="text-[7px] font-mono font-bold text-red-400 bg-red-900/20 border border-red-500/20 px-1 py-0.5 rounded shrink-0">
+            TELEMETRY REDIRECTED
+          </span>
+        </div>
+      )}
     </div>
   );
 }

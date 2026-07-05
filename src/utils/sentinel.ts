@@ -23,11 +23,17 @@ export interface Constitution {
   };
 }
 
+export const SENTINEL_CONFIG = {
+  maxScoreRatePerSecond: 50000,     // was too low
+  maxCoinRatePerSecond: 100,        // 1 coin per 0.026s = ~38/s, raise ceiling (set to 100)
+  maxAccelerationDelta: 2500,       // was 150 — too aggressive for high speed
+};
+
 export const CONSTITUTION_STYX: Constitution = {
   velocity: {
     maxSpeed: 80.0,       // normal is ~15-25, burst is up to ~45-50
     minSpeed: 0.0,
-    maxAcceleration: 150.0 // prevent extreme acceleration impulses
+    maxAcceleration: SENTINEL_CONFIG.maxAccelerationDelta // prevent extreme acceleration impulses
   },
   position: {
     validLanes: [-1, 0, 1],
@@ -37,8 +43,8 @@ export const CONSTITUTION_STYX: Constitution = {
   resources: {
     maxHealth: 100,
     maxEnergy: 100,
-    maxCoinsDeltaPerSecond: 25,
-    maxScoreDeltaPerSecond: 15000,
+    maxCoinsDeltaPerSecond: SENTINEL_CONFIG.maxCoinRatePerSecond,
+    maxScoreDeltaPerSecond: SENTINEL_CONFIG.maxScoreRatePerSecond,
     maxEnergyDeltaPerSecond: 100
   },
   stateRules: {
