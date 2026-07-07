@@ -53,6 +53,24 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
   const [neuralOverdrive, setNeuralOverdrive] = useState(false);
   const [neuralFrequency, setNeuralFrequency] = useState(2.5); // Hz
 
+  // ElevenLabs TTS State & Ref managers
+  const [ttsText, setTtsText] = useState('CST-ERT synaptic connection established. Rig skeleton synchronized and standing by.');
+  const [ttsVoiceId, setTtsVoiceId] = useState('pNInz6obpgHs9S3AsBsc'); // Adam (Deep Cyber Commander)
+  const [isTtsLoading, setIsTtsLoading] = useState(false);
+  const [ttsPlaying, setTtsPlaying] = useState(false);
+
+  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  const ELEVENLABS_VOICES = [
+    { id: 'pNInz6obpgHs9S3AsBsc', name: 'ADAM (Commander)' },
+    { id: '21m00Tcm4TlvDq8ikWAM', name: 'RACHEL (AI Agent)' },
+    { id: 'ErXwobaYiN019PkySvjV', name: 'ANTONI (Tech Spec)' },
+    { id: 'EXAVITQu4vr4xnSDTEMa', name: 'BELLA (Tactical)' }
+  ];
+
   // 3D HMI Head Canvas refs
   const hmiCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const hmiEngineRef = useRef<Engine | null>(null);
@@ -413,6 +431,31 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
 
         const headMesh = scene.getMeshByName("Belica_primitive3");
         if (headMesh) {
+          // MORPH TARGET DIAGNOSTIC — temporary, remove after scan
+          const primitiveNames = [
+            "Belica_primitive0", "Belica_primitive1", "Belica_primitive2",
+            "Belica_primitive3", "Belica_primitive4", "Belica_primitive5",
+            "Belica_primitive6", "Belica_primitive7", "Belica_primitive8",
+            "Belica_primitive9", "Belica_primitive10", "Belica_primitive11",
+            "Belica_primitive12", "Belica_primitive13"
+          ];
+
+          primitiveNames.forEach(name => {
+            const mesh = scene.getMeshByName(name);
+            if (mesh) {
+              const mm = (mesh as any).morphTargetManager;
+              if (mm && mm.numTargets > 0) {
+                console.log(`MORPH FOUND on ${name}: ${mm.numTargets} targets`);
+                setTerminalLogs(prev => [...prev, `[DIAGNOSTIC] MORPH FOUND on ${name}: ${mm.numTargets} targets`]);
+                for (let i = 0; i < mm.numTargets; i++) {
+                  const targetName = mm.getTarget(i).name;
+                  console.log(`  [${i}] ${targetName}`);
+                  setTerminalLogs(prev => [...prev, `  - [${i}] ${targetName}`]);
+                }
+              }
+            }
+          });
+
           // Hide all other meshes to isolate the head
           result.meshes.forEach((m: any) => {
             if (m !== headMesh && m !== loadedRoot) {
@@ -466,10 +509,144 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
     };
   }, [activeTab, isBooted, gltfModelUrl, modelLoadedSuccess]);
 
+  // Dynamically apply state slider values to Babylon morph targets
+  useEffect(() => {
+    if (!hmiSceneRef.current) return;
+    const scene = hmiSceneRef.current;
+
+    const setMorphValue = (targetName: string, value: number) => {
+      scene.meshes.forEach((mesh: any) => {
+        const mm = mesh.morphTargetManager;
+        if (mm && mm.numTargets > 0) {
+          for (let i = 0; i < mm.numTargets; i++) {
+            const target = mm.getTarget(i);
+            if (target.name.toLowerCase().includes(targetName.toLowerCase())) {
+              target.influence = value;
+            }
+          }
+        }
+      });
+    };
+
+    setMorphValue("jaw", jawArticulation);
+    setMorphValue("brow", browElevation);
+    setMorphValue("eye", ocularCompression);
+    setMorphValue("mouth", labialCornerPull);
+    setMorphValue("cheek", cheekResonation);
+  }, [jawArticulation, browElevation, ocularCompression, labialCornerPull, cheekResonation, modelLoadedSuccess]);
+
+  // Clean up speech playbacks and frames on unmount
+  useEffect(() => {
+    return () => {
+      if (audioSourceRef.current) {
+        try { audioSourceRef.current.stop(); } catch (e) {}
+      }
+      if (audioCtxRef.current) {
+        try { audioCtxRef.current.close(); } catch (e) {}
+      }
+      if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, []);
+
+  const stopSpeechPlayback = () => {
+    setTtsPlaying(false);
+
+    if (audioSourceRef.current) {
+      try {
+        audioSourceRef.current.stop();
+      } catch (e) {}
+      audioSourceRef.current = null;
+    }
+    if (audioCtxRef.current) {
+      try {
+        audioCtxRef.current.close();
+      } catch (e) {}
+      audioCtxRef.current = null;
+    }
+
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    speechUtteranceRef.current = null;
+
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
+    // Return joints/sliders back to neutral
+    setJawArticulation(0);
+    setLabialCornerPull(0);
+    setOcularCompression(0);
+  };
+
+  const speakCST = (text: string) => {
+    if (!window.speechSynthesis) {
+      console.warn("Speech synthesis not available");
+      setTerminalLogs(prev => [...prev, "TTS_ERROR: Browser does not support speech synthesis."]);
+      return;
+    }
+
+    stopSpeechPlayback();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.88;
+    utterance.pitch = 0.8;
+    utterance.volume = 1.0;
+    // No voice selection — use browser default (most reliable)
+
+    speechUtteranceRef.current = utterance;
+    setTtsPlaying(true);
+    setNeuralOverdrive(false); // Disable auto-oscillation during speech
+
+    utterance.onstart = () => {
+      const startTime = Date.now();
+      const updateSimulatedSync = () => {
+        if (!window.speechSynthesis.speaking) {
+          stopSpeechPlayback();
+          return;
+        }
+        const elapsed = (Date.now() - startTime) / 1000.0;
+        
+        // Multi-frequency wave mouth-movement simulation
+        const jawVal = Math.abs(Math.sin(elapsed * 15.0)) * 0.7 + (Math.sin(elapsed * 4.0) > 0 ? 0.25 : 0);
+        const lipVal = Math.abs(Math.cos(elapsed * 11.0)) * 0.4;
+        
+        setJawArticulation(Math.min(1.0, jawVal));
+        setLabialCornerPull(Math.min(1.0, lipVal));
+        setOcularCompression(Math.abs(Math.sin(elapsed * 7.0)) * 0.1);
+
+        animationFrameRef.current = requestAnimationFrame(updateSimulatedSync);
+      };
+      animationFrameRef.current = requestAnimationFrame(updateSimulatedSync);
+    };
+
+    utterance.onend = () => {
+      stopSpeechPlayback();
+      setTerminalLogs(prev => [...prev, "TTS_NODE: Vocal transmission complete."]);
+    };
+
+    utterance.onerror = (e) => {
+      stopSpeechPlayback();
+      console.warn("SpeechSynthesis error:", e);
+    };
+
+    window.speechSynthesis.speak(utterance);
+    console.log("CST VOCAL: speaking →", text);
+  };
+
   const handleStartConnection = () => {
     if (isConnecting) return;
     setIsConnecting(true);
     setConnectionProgress(0);
+
+    // Speak native TTS connection phrase
+    speakCST("Trans-neural connection established. Pilot override ready.");
 
     // Multi-tonal sound sweeps
     playBeep(330, 0.8, 'sawtooth', 0.04);
@@ -790,7 +967,7 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
             <div className="absolute bottom-0 right-0 w-[1px] h-6 bg-cyan-500" />
             
             <h3 className="text-[9px] font-mono tracking-widest text-zinc-400 uppercase mb-3 border-b border-zinc-900 pb-1.5 flex items-center gap-1">
-              <Sliders size={11} className="text-cyan-400" /> Rig Skeletons Controller
+              <Sliders size={11} className="text-cyan-400" /> RIG SKELETONS CONTROLLER
             </h3>
 
             {/* Controller sliders */}
@@ -812,6 +989,7 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
                     setJawArticulation(parseFloat(e.target.value));
                     playMorphSfx();
                   }}
+                  onPointerUp={() => speakCST("Calibrated.")}
                   className="w-full accent-cyan-500 h-1 bg-zinc-900 rounded-lg cursor-pointer"
                 />
               </div>
@@ -832,6 +1010,7 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
                     setBrowElevation(parseFloat(e.target.value));
                     playMorphSfx();
                   }}
+                  onPointerUp={() => speakCST("Calibrated.")}
                   className="w-full accent-cyan-500 h-1 bg-zinc-900 rounded-lg cursor-pointer"
                 />
               </div>
@@ -852,6 +1031,7 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
                     setOcularCompression(parseFloat(e.target.value));
                     playMorphSfx();
                   }}
+                  onPointerUp={() => speakCST("Calibrated.")}
                   className="w-full accent-cyan-500 h-1 bg-zinc-900 rounded-lg cursor-pointer"
                 />
               </div>
@@ -872,6 +1052,7 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
                     setLabialCornerPull(parseFloat(e.target.value));
                     playMorphSfx();
                   }}
+                  onPointerUp={() => speakCST("Calibrated.")}
                   className="w-full accent-cyan-500 h-1 bg-zinc-900 rounded-lg cursor-pointer"
                 />
               </div>
@@ -892,6 +1073,7 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
                     setCheekResonation(parseFloat(e.target.value));
                     playMorphSfx();
                   }}
+                  onPointerUp={() => speakCST("Calibrated.")}
                   className="w-full accent-cyan-500 h-1 bg-zinc-900 rounded-lg cursor-pointer"
                 />
               </div>
@@ -927,6 +1109,80 @@ export default function HeroLanding({ onEnterLounge }: HeroLandingProps) {
                     />
                   </div>
                 )}
+              </div>
+
+              {/* BROWSER LOCAL SYNAPTIC VOCALIZER & SYNTHESIS */}
+              <div className="pt-2.5 border-t border-zinc-900/50 flex flex-col gap-2">
+                <div className="flex items-center gap-1.5 text-[8px] font-mono text-zinc-400 tracking-wider uppercase font-bold">
+                  <Sparkles size={10} className="text-cyan-400 animate-pulse" />
+                  SYNAPTIC VOCALIZER NODE
+                </div>
+
+                {/* Voice Selection */}
+                <div className="grid grid-cols-2 gap-1">
+                  {ELEVENLABS_VOICES.map((v) => (
+                    <button
+                      key={v.id}
+                      disabled={ttsPlaying}
+                      onClick={() => {
+                        setTtsVoiceId(v.id);
+                        playBeep(600, 0.08);
+                      }}
+                      className={`text-[7px] font-mono px-2 py-1 rounded text-left truncate transition cursor-pointer ${
+                        ttsVoiceId === v.id
+                          ? 'border border-cyan-500 text-cyan-400 bg-cyan-950/20 font-bold'
+                          : 'border border-zinc-900 text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
+                      }`}
+                    >
+                      {v.name}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Text input area */}
+                <div className="relative">
+                  <textarea
+                    rows={2}
+                    value={ttsText}
+                    onChange={(e) => setTtsText(e.target.value)}
+                    placeholder="Enter vocal transmission command..."
+                    className="w-full bg-zinc-950 border border-zinc-900 rounded p-1.5 text-[7.5px] font-mono text-zinc-300 focus:outline-none focus:border-cyan-500 resize-none placeholder-zinc-800 leading-normal"
+                  />
+                </div>
+
+                {/* Synthesis Buttons */}
+                <div className="flex gap-1.5">
+                  {ttsPlaying ? (
+                    <button
+                      onClick={() => {
+                        stopSpeechPlayback();
+                        playBeep(400, 0.1);
+                        setTerminalLogs(prev => [...prev, 'TTS_NODE: Synaptic voice-sync terminated by operator.']);
+                      }}
+                      className="flex-1 py-1.5 bg-red-950/30 hover:bg-red-950/50 border border-red-500/50 text-[7.5px] font-mono font-bold text-red-400 uppercase rounded cursor-pointer transition flex items-center justify-center gap-1.5"
+                    >
+                      <VolumeX size={11} className="text-red-400" /> STOP VOCALIZER
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        playBeep(800, 0.05);
+                        speakCST("CST-ERT synaptic connection established. Rig skeleton synchronized and standing by.");
+                      }}
+                      className="flex-1 py-1.5 bg-cyan-950/40 hover:bg-cyan-950/60 border border-cyan-500 text-[7.5px] font-mono font-bold text-cyan-400 uppercase rounded cursor-pointer transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                    >
+                      <Volume2 size={11} className="text-cyan-400" /> SYNC VOCAL NODE
+                    </button>
+                  )}
+                </div>
+
+                {/* Subtle Voice Status Indication */}
+                <div className="text-[7px] font-mono text-zinc-600 flex items-center justify-between">
+                  <span>SPEECH SYNTHESIS: NATIVE</span>
+                  <span className={ttsPlaying ? 'text-cyan-400 animate-pulse font-bold' : 'text-zinc-600 font-bold'}>
+                    {ttsPlaying ? '● TRANSMITTING...' : '■ READY'}
+                  </span>
+                </div>
               </div>
 
             </div>

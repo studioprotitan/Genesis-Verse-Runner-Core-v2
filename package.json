@@ -4,15 +4,16 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port 3000 --host 0.0.0.0",
-    "build": "tsc && vite build",
+    "dev": "tsx server.ts",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "lint": "tsc --noEmit",
-    "preview": "vite preview"
+    "start": "node dist/server.cjs"
   },
   "dependencies": {
     "@babylonjs/core": "^6.48.1",
     "@babylonjs/inspector": "^6.48.1",
     "@babylonjs/loaders": "^6.48.1",
+    "express": "^5.2.1",
     "lucide-react": "^0.435.0",
     "motion": "^11.11.13",
     "react": "^18.3.1",
@@ -20,10 +21,13 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0-beta.8",
+    "@types/express": "^5.0.6",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "esbuild": "^0.28.1",
     "tailwindcss": "^4.0.0-beta.8",
+    "tsx": "^4.23.0",
     "typescript": "^5.6.3",
     "vite": "^6.0.5"
   }

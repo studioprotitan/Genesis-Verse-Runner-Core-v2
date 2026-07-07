@@ -27,6 +27,7 @@ import {
   Sparkles, Eye, Volume2, VolumeX, Swords, Compass, Bookmark
 } from 'lucide-react';
 import AbyssumAudioController from './AbyssumAudioController';
+import HeroLanding from './HeroLanding';
 
 const modelGlbUrl = '/jog-fwd-variants.glb';
 
@@ -142,6 +143,7 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
 
   const [testKeyPressed, setTestKeyPressed] = useState<string | null>(null);
   const [testActionName, setTestActionName] = useState<string | null>(null);
+  const [osuBrainOpen, setOSUBrainOpen] = useState(false);
 
   const animationModeRef = useRef<'IDLE' | 'JOGGING'>('IDLE');
   const loadedAnimsRef = useRef<{
@@ -1255,6 +1257,22 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
                 Disconnect
               </button>
             )}
+            <button
+              onClick={() => setOSUBrainOpen(true)}
+              style={{
+                background: "transparent",
+                border: "1px solid #00d4c8",
+                color: "#00d4c8",
+                padding: "6px 14px",
+                fontFamily: "Share Tech Mono, monospace",
+                fontSize: "11px",
+                letterSpacing: "0.1em",
+                cursor: "pointer",
+                textTransform: "uppercase"
+              }}
+            >
+              ⬡ OSU BRAIN
+            </button>
             <button 
               onClick={() => {
                 setIsMuted(!isMuted);
@@ -2073,6 +2091,46 @@ export default function PreDeploymentLounge({ onStartGame, savedHighScore = 0, o
           </motion.div>
         )}
       </AnimatePresence>
+
+      {osuBrainOpen && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            zIndex: 9999,
+            background: "#050508",
+            overflow: "auto"
+          }}
+        >
+          {/* EXIT button — always visible top right */}
+          <button
+            onClick={() => setOSUBrainOpen(false)}
+            style={{
+              position: "fixed",
+              top: 16,
+              right: 16,
+              zIndex: 10000,
+              background: "#e87c2a",
+              color: "#0a0806",
+              border: "none",
+              padding: "8px 20px",
+              fontFamily: "Share Tech Mono, monospace",
+              fontSize: "12px",
+              letterSpacing: "0.1em",
+              cursor: "pointer",
+              textTransform: "uppercase"
+            }}
+          >
+            ✕ EXIT BRAIN
+          </button>
+
+          {/* OSU Brain component — full HMI Head Node */}
+          <HeroLanding onEnterLounge={() => {}} />
+        </div>
+      )}
     </div>
   );
 }
